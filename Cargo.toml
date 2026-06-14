@@ -7,3 +7,25 @@ license = "MIT"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.6.1", features = ["derive", "env"] }
+k8s-openapi = { version = "0.27.1", features = ["latest"] }
+kube = { version = "3.1.0", features = ["client", "config", "rustls-tls"] }
+procfs = "0.18.0"
+prometheus = "0.14.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+serde_yaml = "0.9.34"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = [
+  "rt",
+  "macros",
+  "fs",
+  "process",
+  "signal",
+  "time",
+  "net",
+  "io-util",
+] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
