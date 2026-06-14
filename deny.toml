@@ -1,2 +1,5 @@
 [licenses]
-allow = ["MIT"]
+# The dependency graph (kube-rs, tokio, hyper, ...) transitively pulls in these
+# permissive licenses alongside MIT. All are OSI-approved and compatible with
+# the project's MIT license.
+allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "BSL-1.0", "ISC", "Unicode-3.0"]
