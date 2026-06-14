@@ -89,6 +89,31 @@ prints a peak/idle table. Both need a `kind` cluster and are **not** part of
 CI job — the scripts exit non-zero on a budget breach, so a regression fails the
 run. See [bench/README.md](bench/README.md).
 
+## End-to-end tests
+
+```sh
+make e2e        # kind cluster + in-cluster Forgejo + leancd
+```
+
+The e2e suite spins up an ephemeral `kind` cluster and runs **Forgejo and
+leancd as in-cluster Pods** (leancd is built into a container image via the
+root [`Dockerfile`](Dockerfile) and loaded into the kind node). It drives the
+`doc/design.md` behaviour end-to-end across ~17 scenarios: initial apply, Git
+change detection + steady-state drift-check, drift self-heal, prune, state
+ConfigMap, the `sync`/`status`/`--force` CLI, Prometheus metrics, cluster- and
+namespaced-scope resources, CRDs, the controller polling loop, HTTPS basic-auth
+and SSH-key Git access, and error recovery.
+
+Every scenario is `#[ignore]`d (needs Docker + kind), so the suite stays out of
+`nix flake check` (no Docker in the sandbox) — the same status as `make bench`.
+Run it manually or in an external CI job; a failing scenario exits non-zero so a
+regression fails the run. See [`tests/e2e.rs`](tests/e2e.rs) and
+[`tests/common/`](tests/common/).
+
+Concurrency and field-conflict behaviour ([design §3.4](doc/design.md)) are
+covered by unit tests and are deliberately out of e2e scope: scenarios drive
+`sync` serially and run a single controller at a time.
+
 ## License
 
 MIT.

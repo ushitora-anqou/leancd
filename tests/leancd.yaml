@@ -1,0 +1,116 @@
+# Ephemeral in-cluster leancd for the e2e suite.
+#
+# Runs as a Deployment with a 1h poll interval so it stays dormant during
+# scenarios that drive sync/status via `kubectl exec` — it still serves
+# /metrics and is the exec host for `leancd sync`/`leancd status`. Scenarios
+# that need an actively-polling controller (drift self-heal, controller
+# polling) spin up their own short-lived controller Deployment/Job.
+#
+# Git credentials come from the leancd-git-credentials Secret (HTTPS basic
+# auth against the in-cluster Forgejo). The repo points at an auto-initialised
+# `controller-idle` repo so the controller's first reconcile succeeds without
+# touching any scenario's state.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: leancd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: leancd
+  namespace: leancd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: leancd-e2e
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - nonResourceURLs: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: leancd-e2e
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: leancd-e2e
+subjects:
+  - kind: ServiceAccount
+    name: leancd
+    namespace: leancd
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: leancd-git-credentials
+  namespace: leancd
+type: Opaque
+stringData:
+  GIT_USERNAME: leancd
+  GIT_PASSWORD: leancd-e2e-pass
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leancd
+  namespace: leancd
+  labels:
+    app.kubernetes.io/name: leancd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: leancd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: leancd
+    spec:
+      serviceAccountName: leancd
+      containers:
+        - name: leancd
+          image: leancd:latest
+          imagePullPolicy: IfNotPresent
+          args: ["controller"]
+          env:
+            - name: LEANCD_REPO_URL
+              value: http://forgejo.forgejo.svc.cluster.local:3000/leancd/controller-idle.git
+            - name: LEANCD_BRANCH
+              value: main
+            - name: LEANCD_PATH
+              value: "."
+            - name: LEANCD_POLL_INTERVAL
+              value: 1h
+            - name: LEANCD_NAMESPACE
+              value: leancd
+            - name: LEANCD_METRICS_ADDR
+              value: 0.0.0.0:9090
+            - name: LEANCD_WORK_DIR
+              value: /tmp/leancd-work
+          envFrom:
+            - secretRef:
+                name: leancd-git-credentials
+          ports:
+            - name: metrics
+              containerPort: 9090
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: leancd-metrics
+  namespace: leancd
+spec:
+  selector:
+    app.kubernetes.io/name: leancd
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics

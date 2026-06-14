@@ -24,11 +24,16 @@ cargo test <name>              # run a single test by name substring
 make all                       # fmt + build + test-unit
 make fmt                       # cargo fmt + taplo fmt (Cargo.toml, taplo.toml, deny.toml)
 make bench                     # RSS benchmark against a kind cluster (see below)
+make e2e                       # end-to-end tests: kind cluster with in-cluster
+                               #   Forgejo + leancd Pods (design.md behaviour).
+                               #   #[ignore]d, so not in nix flake check.
+                               #   Concurrency (design §3.4) is unit-test
+                               #   territory, out of e2e scope.
 make test                      # == nix flake check : full CI (fmt, clippy -D warnings,
                                #   nextest, cargo-deny, cargo-audit)
 ```
 
-The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provides the toolchain, plus `curl`, `kind`, `kubectl` in the dev shell. `make test` runs the complete CI gate (clippy denies warnings, `cargo-deny` allows **only MIT** licenses — see `deny.toml`).
+The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provides the toolchain, plus `curl`, `kind`, `kubectl` in the dev shell. `make test` runs the complete CI gate (clippy denies warnings, `cargo-deny` allows permissive licenses only — MIT/Apache-2.0/BSD-3-Clause/BSL-1.0/ISC/Unicode-3.0; see `deny.toml`).
 
 **RSS benchmark** (`make bench` / `./bench/bench.sh`): spins up a `kind` cluster, generates N manifests into a local Git repo, runs a release build of leancd against it, scrapes the `leancd_rss_bytes` Prometheus metric, and fails if RSS ≥ the budget. Tunables: `BENCH_RESOURCE_COUNT` (default 200), `RSS_BUDGET_MIB` (default 100), `KIND_CLUSTER_NAME`.
 

@@ -1,0 +1,76 @@
+# Ephemeral in-cluster Forgejo for the leancd e2e suite. SQLite + INSTALL_LOCK
+# skip the install wizard so the harness can create the admin user via the CLI
+# (`forgejo admin user create`). Data lives on an emptyDir (gone with the Pod,
+# hence with the kind cluster). HTTP (3000) and SSH (22) are exposed via a
+# Service so leancd can reach it on forgejo.forgejo.svc.cluster.local.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: forgejo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forgejo
+  namespace: forgejo
+  labels:
+    app.kubernetes.io/name: forgejo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: forgejo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: forgejo
+    spec:
+      containers:
+        - name: forgejo
+          image: codeberg.org/forgejo/forgejo:7
+          env:
+            - name: FORGEJO__security__INSTALL_LOCK
+              value: "true"
+            - name: FORGEJO__database__DB_TYPE
+              value: sqlite3
+            - name: FORGEJO__server__ROOT_URL
+              value: http://forgejo.forgejo.svc.cluster.local:3000/
+            - name: FORGEJO__server__SSH_DOMAIN
+              value: forgejo.forgejo.svc.cluster.local
+            - name: FORGEJO__server__SSH_PORT
+              value: "22"
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: ssh
+              containerPort: 22
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: forgejo
+  namespace: forgejo
+spec:
+  selector:
+    app.kubernetes.io/name: forgejo
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http
+    - name: ssh
+      port: 22
+      targetPort: ssh
