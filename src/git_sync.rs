@@ -118,7 +118,11 @@ impl SshKeyFile {
         let key_path = parent.join(format!(".leancd_ssh_key_{tag}"));
         let known_hosts = parent.join(format!(".leancd_known_hosts_{tag}"));
 
-        tokio::fs::write(&key_path, key.as_bytes())
+        // The key is trimmed when read from the env, but ssh/OpenSSH requires a
+        // trailing newline after the PEM footer ("error in libcrypto"
+        // otherwise), so add it back when materialising the file.
+        let key_with_newline = format!("{key}\n");
+        tokio::fs::write(&key_path, key_with_newline.as_bytes())
             .await
             .map_err(|e| Error::Git(format!("could not write ssh key file: {e}")))?;
         set_mode_0600(&key_path)?;
