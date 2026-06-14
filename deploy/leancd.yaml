@@ -1,0 +1,122 @@
+# Kubernetes manifests for running leancd as a controller.
+#
+# Apply with:
+#   kubectl apply -f deploy/leancd.yaml
+#
+# Git credentials are read from a Secret named `leancd-git-credentials`.
+# For HTTPS basic auth, set GIT_USERNAME and GIT_PASSWORD. For SSH, set
+# GIT_SSH_KEY to a PEM private key (the repo URL must be `git@host:...` or
+# `ssh://...`). For a public repo the Secret may be omitted. Examples:
+#   kubectl -n leancd create secret generic leancd-git-credentials \
+#     --from-literal=GIT_USERNAME=<user> --from-literal=GIT_PASSWORD=<token>
+#   kubectl -n leancd create secret generic leancd-git-credentials \
+#     --from-file=GIT_SSH_KEY=$HOME/.ssh/id_ed25519
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: leancd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: leancd
+  namespace: leancd
+---
+# leancd applies arbitrary manifests (including CRDs and cluster-scoped
+# resources), so it needs broad permissions. Narrow this in production to the
+# resources/namespaces leancd should manage.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: leancd
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - nonResourceURLs: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: leancd
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: leancd
+subjects:
+  - kind: ServiceAccount
+    name: leancd
+    namespace: leancd
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leancd
+  namespace: leancd
+  labels:
+    app.kubernetes.io/name: leancd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: leancd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: leancd
+    spec:
+      serviceAccountName: leancd
+      containers:
+        - name: leancd
+          image: leancd:latest
+          imagePullPolicy: IfNotPresent
+          args: ["controller"]
+          env:
+            # --- non-secret configuration (command-line args via env) ---
+            - name: LEANCD_REPO_URL
+              value: "https://github.com/example/manifests.git"
+            - name: LEANCD_BRANCH
+              value: "main"
+            - name: LEANCD_PATH
+              value: "."
+            - name: LEANCD_NAMESPACE
+              value: "leancd"
+            - name: LEANCD_POLL_INTERVAL
+              value: "60s"
+            - name: LEANCD_METRICS_ADDR
+              value: "0.0.0.0:9090"
+            - name: LEANCD_WORK_DIR
+              value: "/tmp/leancd-work"
+          # --- secret configuration (only credentials, from a Secret) ---
+          envFrom:
+            - secretRef:
+                name: leancd-git-credentials
+                optional: true
+          ports:
+            - name: metrics
+              containerPort: 9090
+          resources:
+            # RSS stays under 100MiB (see bench/); the limit leaves headroom.
+            limits:
+              memory: 128Mi
+              cpu: 200m
+            requests:
+              memory: 32Mi
+              cpu: 50m
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: leancd-metrics
+  namespace: leancd
+spec:
+  selector:
+    app.kubernetes.io/name: leancd
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
