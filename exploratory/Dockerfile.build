@@ -1,0 +1,31 @@
+# Builds leancd INSIDE the container.
+#
+# Why not the project's production Dockerfile, and why not the host binary:
+#   1. Production Dockerfile mtime bug: after the throwaway `fn main(){}` deps
+#      build, `COPY src/` + `cargo build` can be skipped by Cargo because
+#      BuildKit preserves the host's older mtimes and Cargo's mtime fingerprint
+#      sees no change — shipping the dummy binary.
+#   2. Host binary (NixOS) glibc mismatch: a binary built on the NixOS host has
+#      its dynamic linker pointed at /nix/store/.../ld-linux-x86-64.so.2, which
+#      does not exist in debian:bookworm-slim → "no such file or directory".
+# `cargo clean -p leancd` here forces the real sources to recompile.
+FROM rust:1-bookworm AS builder
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && cargo build --release && rm -rf src
+COPY src/ ./src/
+# Force the leancd crate to recompile: `cargo clean -p leancd` is unreliable
+# here (it removes 0 files because the dummy build's fingerprint is keyed on the
+# throwaway src/). rm -rf the crate's artifacts by hand, then build.
+RUN rm -rf target/release/leancd \
+        target/release/.fingerprint/leancd-* \
+        target/release/incremental/leancd-* \
+        target/release/deps/leancd-* \
+        target/release/build/leancd-* \
+    && cargo build --release
+FROM debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/leancd /usr/local/bin/leancd
+ENTRYPOINT ["leancd"]

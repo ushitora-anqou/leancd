@@ -1,0 +1,103 @@
+# leancd deployment for the exploratory comparison.
+#
+# The Pod runs in namespace "leancd" but reconciles INTO namespace "app"
+# (LEANCD_NAMESPACE=app): that is where the state ConfigMap AND the synced
+# application resources live — matching Argo CD's destination namespace so the
+# two controllers are compared apples-to-apples.
+#
+# poll_interval is intentionally short (5s) so the test driver does not have to
+# wait long for git changes to be picked up.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: leancd
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: leancd
+  namespace: leancd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: leancd-compare
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - nonResourceURLs: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: leancd-compare
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: leancd-compare
+subjects:
+  - kind: ServiceAccount
+    name: leancd
+    namespace: leancd
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: leancd-git-credentials
+  namespace: leancd
+type: Opaque
+stringData:
+  GIT_USERNAME: leancd
+  GIT_PASSWORD: leancd-compare-pass
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leancd
+  namespace: leancd
+  labels:
+    app.kubernetes.io/name: leancd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: leancd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: leancd
+    spec:
+      serviceAccountName: leancd
+      containers:
+        - name: leancd
+          image: leancd:latest
+          imagePullPolicy: IfNotPresent
+          args: ["controller"]
+          env:
+            - name: LEANCD_REPO_URL
+              value: __FORGEJO_GIT_URL__
+            - name: LEANCD_BRANCH
+              value: main
+            - name: LEANCD_PATH
+              value: "."
+            - name: LEANCD_POLL_INTERVAL
+              value: 30s
+            - name: LEANCD_NAMESPACE
+              value: app
+            - name: LEANCD_STATE_CONFIGMAP
+              value: leancd-state
+            - name: LEANCD_METRICS_ADDR
+              value: 0.0.0.0:9090
+            - name: LEANCD_WORK_DIR
+              value: /tmp/leancd-work
+          envFrom:
+            - secretRef:
+                name: leancd-git-credentials
+          ports:
+            - name: metrics
+              containerPort: 9090

@@ -1,0 +1,64 @@
+# Argo CD repository connection + Application for the exploratory comparison.
+#
+# Configured to mirror leancd's behaviour so the two are comparable:
+#   - ServerSideApply (leancd uses SSA too)
+#   - automated prune + self-heal (leancd drifts-prunes every pass)
+#   - same repo / path / destination namespace (app)
+# The Forgejo repo is a private HTTP repo; credentials and an insecure flag
+# are registered via the repository Secret.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: forgejo-repo
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: repository
+stringData:
+  type: git
+  url: __FORGEJO_GIT_URL__
+  username: leancd
+  password: leancd-compare-pass
+  insecure: "true"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: compare
+  namespace: argocd
+spec:
+  description: leancd vs Argo CD comparison
+  sourceRepos:
+    - "__FORGEJO_GIT_URL__"
+  destinations:
+    - namespace: app
+      server: https://kubernetes.default.svc
+    - namespace: "*"
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: compare
+  namespace: argocd
+spec:
+  project: compare
+  source:
+    repoURL: __FORGEJO_GIT_URL__
+    targetRevision: main
+    path: .
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: app
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
