@@ -55,6 +55,10 @@ Key flags:
 | `--namespace` | `LEANCD_NAMESPACE` | default | leancd's namespace |
 | `--metrics-addr` | `LEANCD_METRICS_ADDR` | 0.0.0.0:9090 | metrics endpoint |
 
+For the complete flag and environment-variable reference, authentication modes,
+metrics, tuning, and troubleshooting, see
+[doc/user-manual.md](doc/user-manual.md).
+
 ## Deploy
 
 ```sh
@@ -64,6 +68,10 @@ kubectl apply -f deploy/leancd.yaml
 The manifest installs the Namespace, ServiceAccount, RBAC, Deployment, and a
 Service for metrics. Edit the `LEANCD_*` env values for your repository, and
 create the `leancd-git-credentials` Secret for private repos.
+
+For a hands-on walkthrough deploying leancd into a local `kind` cluster
+(including an optional in-cluster Forgejo Git server), see
+[doc/tutorial.md](doc/tutorial.md).
 
 ## How it stays under 100MiB
 
@@ -114,6 +122,13 @@ Concurrency and field-conflict behaviour ([design §3.4](doc/design.md)) are
 covered by unit tests and are deliberately out of e2e scope: scenarios drive
 `sync` serially and run a single controller at a time.
 
+## Documentation
+
+- [doc/user-manual.md](doc/user-manual.md) — complete feature reference
+- [doc/tutorial.md](doc/tutorial.md) — hands-on kind cluster walkthrough
+- [doc/architecture.md](doc/architecture.md) — how the implementation works
+- [doc/design.md](doc/design.md) — design rationale (Japanese)
+
 ## License
 
-MIT.
+Apache-2.0 — see [LICENSE](LICENSE).
