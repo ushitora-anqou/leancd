@@ -50,7 +50,7 @@ Key flags:
 |---|---|---|---|
 | `--repo-url` | `LEANCD_REPO_URL` | — | Git repository URL |
 | `--branch` | `LEANCD_BRANCH` | main | branch to track |
-| `--path` | `LEANCD_PATH` | . | manifest directory (recursive) |
+| `--path` | `LEANCD_PATH` | . | glob patterns of manifest directories (recursive; repeatable; comma-separated via env, e.g. `live/*/prod`) |
 | `--poll-interval` | `LEANCD_POLL_INTERVAL` | 60s | reconciliation interval |
 | `--namespace` | `LEANCD_NAMESPACE` | default | leancd's namespace |
 | `--metrics-addr` | `LEANCD_METRICS_ADDR` | 0.0.0.0:9090 | metrics endpoint |

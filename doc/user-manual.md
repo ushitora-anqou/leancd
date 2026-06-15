@@ -16,8 +16,9 @@ It syncs plain YAML manifests from a Git repository into the cluster it runs
 in, detects drift, and self-heals — with a hard process-RSS budget of
 **≤ 100MiB**.
 
-One running process syncs exactly one Git repository (one branch, one path).
-To manage multiple repositories, run multiple leancd processes (Deployments).
+One running process syncs exactly one Git repository (one branch, one set of
+paths). To manage multiple repositories, run multiple leancd processes
+(Deployments).
 
 Reading order if you are new:
 
@@ -32,9 +33,10 @@ Reading order if you are new:
 ### Git-to-cluster sync
 
 leancd keeps a depth-1 shallow checkout of `<repo-url>` at `<branch>` under
-`<work-dir>`, parses every `*.yaml`/`*.yml` in `<path>` (recursively), and
+`<work-dir>`, expands each `--path` glob pattern into the directories it
+matches, parses every `*.yaml`/`*.yml` under them (recursively), and
 server-side-applies each manifest into the cluster. One process = one repo +
-one path.
+one set of paths.
 
 ### The managed-by label
 
@@ -164,7 +166,7 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 |---|---|---|---|---|
 | `--repo-url` | `LEANCD_REPO_URL` | — (required) | all | Git repository URL |
 | `--branch` | `LEANCD_BRANCH` | `main` | all | branch / ref to track |
-| `--path` | `LEANCD_PATH` | `.` | all | manifest directory, scanned recursively |
+| `--path` | `LEANCD_PATH` | `.` | all | glob patterns of manifest directories, scanned recursively; repeatable, comma-separated via env (e.g. `live/*/prod`) |
 | `--poll-interval` | `LEANCD_POLL_INTERVAL` | `60s` | controller | reconciliation interval (see [§5.2](#52-duration-parser)) |
 | `--namespace` | `LEANCD_NAMESPACE` | `default` | all | leancd's namespace (state ConfigMap; default ns for ns-less resources) |
 | `--state-configmap` | `LEANCD_STATE_CONFIGMAP` | `leancd-state` | all | state ConfigMap name |

@@ -17,8 +17,10 @@ pub struct Config {
     pub repo_url: String,
     /// Branch / ref to track, e.g. `main`.
     pub branch: String,
-    /// Directory inside the repository containing manifests (recursive scan).
-    pub path: String,
+    /// Glob patterns of directories inside the repository to sync. Each matched
+    /// directory is scanned recursively; patterns are OR-combined and deduped.
+    /// An empty slice means "the whole repo" (`.`).
+    pub path: Vec<String>,
     /// Reconciliation polling interval.
     pub poll_interval: std::time::Duration,
     /// Namespace leancd runs in (used for the state ConfigMap and as the
@@ -218,7 +220,7 @@ mod tests {
         Config {
             repo_url: repo_url.to_string(),
             branch: "main".into(),
-            path: ".".into(),
+            path: vec![".".to_string()],
             poll_interval: std::time::Duration::from_secs(60),
             namespace: "default".into(),
             state_configmap: "leancd-state".into(),

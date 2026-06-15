@@ -60,8 +60,14 @@ impl Reconciler {
         let prev_applied = prev.as_ref().map(|s| s.applied.clone()).unwrap_or_default();
 
         let sync = git_sync::sync(&self.cfg, prev_sha.as_deref()).await?;
-        let root = Path::new(&self.cfg.work_dir).join(&self.cfg.path);
-        let mut manifests = manifest::parse_dir(&root).await?;
+        let work = Path::new(&self.cfg.work_dir);
+        let roots = manifest::expand_roots(work, &self.cfg.path)?;
+        tracing::debug!(
+            roots = roots.len(),
+            patterns = ?self.cfg.path,
+            "expanded sync path patterns into directories"
+        );
+        let mut manifests = manifest::parse_paths(&roots).await?;
         for m in &mut manifests {
             manifest::inject_managed_label(
                 m,

@@ -43,9 +43,12 @@ pub struct CommonArgs {
     #[arg(long, env = "LEANCD_BRANCH", default_value = "main")]
     pub branch: String,
 
-    /// Path inside the repository containing manifests (recursive).
-    #[arg(long, env = "LEANCD_PATH", default_value = ".")]
-    pub path: String,
+    /// Glob patterns of directories to sync, scanned recursively (e.g.
+    /// `live/*/prod`). `*` matches one path segment, `**` matches any depth.
+    /// Repeatable (`--path a --path b`) and comma-separated when set via
+    /// `LEANCD_PATH` (`LEANCD_PATH=a,b`). Defaults to the whole repo (`.`).
+    #[arg(long, env = "LEANCD_PATH", value_delimiter = ',')]
+    pub path: Vec<String>,
 
     /// Polling interval (e.g. 30s, 5m).
     #[arg(long, env = "LEANCD_POLL_INTERVAL", default_value = "60s")]
@@ -99,7 +102,11 @@ impl CommonArgs {
         Ok(Config {
             repo_url: self.repo_url.clone(),
             branch: self.branch.clone(),
-            path: self.path.clone(),
+            path: if self.path.is_empty() {
+                vec![".".to_string()]
+            } else {
+                self.path.clone()
+            },
             poll_interval,
             namespace: self.namespace.clone(),
             state_configmap: self.state_configmap.clone(),

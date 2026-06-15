@@ -7,6 +7,7 @@
 
 #![allow(deprecated)] // serde_yaml is maintenance-mode but is the stable,
                       // streaming-capable YAML parser we depend on (see design.doc).
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -138,6 +139,52 @@ pub async fn parse_dir(root: &Path) -> Result<Vec<RawManifest>> {
                 tracing::warn!(path = %file.display(), error = %e, "failed to parse manifest file");
             }
         }
+    }
+    Ok(out)
+}
+
+/// Expand glob `patterns` (e.g. `live/*/prod`) relative to `base` into the
+/// deduplicated, deterministically-ordered set of directories they match.
+///
+/// `*` matches a single path segment and `**` spans any number of segments.
+/// Only directories are kept — each is intended to be passed to [`parse_dir`],
+/// which already recurses into subdirectories. A literal path with no glob
+/// metacharacters matches itself if it is an existing directory.
+///
+/// Returns [`Error::Config`] if a pattern fails to compile or if **no** pattern
+/// matches any directory — a fail-fast so a typo never silently prunes every
+/// resource on the next pass.
+pub fn expand_roots(base: &Path, patterns: &[String]) -> Result<Vec<PathBuf>> {
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    for pat in patterns {
+        let abs = base.join(pat);
+        let matched = glob::glob(&abs.to_string_lossy())
+            .map_err(|e| Error::Config(format!("invalid path pattern {pat:?}: {e}")))?;
+        for entry in matched {
+            let path = entry.map_err(|e| {
+                Error::Config(format!("error reading a match of pattern {pat:?}: {e}"))
+            })?;
+            if path.is_dir() {
+                seen.insert(path);
+            }
+        }
+    }
+    if seen.is_empty() {
+        return Err(Error::Config(format!(
+            "no directories matched path pattern(s) {patterns:?}; refusing to sync as \
+             that would prune every managed resource"
+        )));
+    }
+    Ok(seen.into_iter().collect())
+}
+
+/// Parse manifests from every root produced by [`expand_roots`], recursing
+/// into each via [`parse_dir`] and concatenating the results.
+pub async fn parse_paths(roots: &[PathBuf]) -> Result<Vec<RawManifest>> {
+    let mut out = Vec::new();
+    for root in roots {
+        let ms = parse_dir(root).await?;
+        out.extend(ms);
     }
     Ok(out)
 }
@@ -312,5 +359,128 @@ items: []
 ";
         let ms = parse_str(yaml).unwrap();
         assert!(ms.is_empty());
+    }
+
+    use std::collections::BTreeSet;
+
+    /// Build a temp-dir tree for glob tests (unique `suffix` so parallel tests
+    /// do not clash). Layout:
+    /// ```text
+    /// live/a/prod/x.yaml
+    /// live/a/prod/sub/y.yaml
+    /// live/a/nested/prod/deep.yaml
+    /// live/b/prod/z.yaml
+    /// live/c/staging/w.yaml
+    /// ```
+    fn make_glob_tree(suffix: &str) -> PathBuf {
+        let base = std::env::temp_dir().join(format!("leancd-glob-test-{suffix}"));
+        let _ = std::fs::remove_dir_all(&base);
+        let write_cm = |rel: &str| {
+            let p = base.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n").unwrap();
+        };
+        write_cm("live/a/prod/x.yaml");
+        write_cm("live/a/prod/sub/y.yaml");
+        write_cm("live/a/nested/prod/deep.yaml");
+        write_cm("live/b/prod/z.yaml");
+        write_cm("live/c/staging/w.yaml");
+        base
+    }
+
+    fn as_set(roots: Vec<PathBuf>) -> BTreeSet<PathBuf> {
+        roots.into_iter().collect()
+    }
+
+    #[test]
+    fn expand_roots_single_level_glob_matches_two_dirs() {
+        let base = make_glob_tree("single");
+        let roots = expand_roots(&base, &["live/*/prod".into()]).unwrap();
+        let got = as_set(roots);
+        let want: BTreeSet<_> = ["live/a/prod", "live/b/prod"]
+            .into_iter()
+            .map(|r| base.join(r))
+            .collect();
+        assert_eq!(got, want, "live/*/prod must match a/prod and b/prod only");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn expand_roots_double_star_matches_nested() {
+        let base = make_glob_tree("dstar");
+        let roots = expand_roots(&base, &["live/**/prod".into()]).unwrap();
+        let got = as_set(roots);
+        let want: BTreeSet<_> = ["live/a/prod", "live/a/nested/prod", "live/b/prod"]
+            .into_iter()
+            .map(|r| base.join(r))
+            .collect();
+        assert_eq!(got, want, "live/**/prod must also match nested prod dirs");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn expand_roots_literal_dot_matches_base() {
+        let base = make_glob_tree("dot");
+        let roots = expand_roots(&base, &[".".into()]).unwrap();
+        let canon_base = std::fs::canonicalize(&base).unwrap();
+        let matched: Vec<_> = roots
+            .into_iter()
+            .filter_map(|p| std::fs::canonicalize(&p).ok())
+            .collect();
+        assert!(
+            matched.contains(&canon_base),
+            "literal '.' must match the base directory, got {matched:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn expand_roots_zero_match_is_error() {
+        let base = make_glob_tree("zero");
+        let err = expand_roots(&base, &["nope/*".into()]).unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::Config(_)),
+            "zero match must be a Config error, got {err:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn expand_roots_invalid_pattern_is_error() {
+        let base = make_glob_tree("invalid");
+        // An unterminated character class is not a valid glob pattern.
+        let err = expand_roots(&base, &["live/*/prod[".into()]).unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::Config(_)),
+            "invalid pattern must be a Config error, got {err:?}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn expand_roots_dedups_overlapping_patterns() {
+        let base = make_glob_tree("dedup");
+        let roots = expand_roots(&base, &["live/*/prod".into(), "live/a/prod".into()]).unwrap();
+        let got = as_set(roots);
+        assert_eq!(
+            got.iter().filter(|p| p.ends_with("live/a/prod")).count(),
+            1,
+            "live/a/prod must appear once despite two overlapping patterns"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn parse_paths_recurses_into_matched_dirs() {
+        let base = make_glob_tree("parsepaths");
+        let roots = expand_roots(&base, &["live/*/prod".into()]).unwrap();
+        let manifests = parse_paths(&roots).await.unwrap();
+        // live/a/prod -> x.yaml, sub/y.yaml ; live/b/prod -> z.yaml
+        assert_eq!(
+            manifests.len(),
+            3,
+            "all 3 ConfigMaps under matched prod dirs must be parsed"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
