@@ -5,7 +5,7 @@
 # The benchmark builds leancd in release mode and runs it as a process pointed
 # at the kind cluster (kubeconfig), syncing a generated manifest set. It samples
 # two footprints in parallel:
-#   - self:  leancd's own RSS, from its `leancd_rss_bytes` metric.
+#   - self:  leancd's own RSS, read from the process via `ps`.
 #   - tree:  the whole process tree (leancd + git/ssh subprocesses), summed via
 #            `ps`. Shared pages are double-counted, so this overestimates on
 #            purpose — a conservative regression gate.
@@ -13,7 +13,7 @@
 # leancd as a process (rather than in-cluster) measures exactly the same code
 # paths and memory profile.
 #
-# Prereqs: kind, kubectl, git, curl, cargo.
+# Prereqs: kind, kubectl, git, cargo.
 #
 # Tunables:
 #   BENCH_NAMESPACE_COUNT  number of namespaces to generate (default 15)
@@ -35,6 +35,15 @@ cleanup() {
   kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+
+# RSS (bytes) of a single process, read directly via `ps`. The ps RSS column is
+# KiB, so multiply by 1024. leancd no longer exposes an HTTP /metrics endpoint,
+# so its own footprint is sampled from the process, not scraped.
+self_rss_bytes() {
+  local pid="$1"
+  command -v ps >/dev/null 2>&1 || { echo 0; return; }
+  ps -o rss= -p "$pid" 2>/dev/null | awk '{ printf "%d\n", ($1+0)*1024 }'
+}
 
 # Sum RSS (bytes) of a process and ALL its descendants (leancd + git/ssh
 # subprocesses). A single `ps` snapshot keeps the whole tree at one instant. The
@@ -75,7 +84,6 @@ export LEANCD_BRANCH=main
 export LEANCD_PATH=.
 export LEANCD_POLL_INTERVAL=10s
 export LEANCD_WORK_DIR="$WORK/leancd-work"
-export LEANCD_METRICS_ADDR=127.0.0.1:19090
 
 echo ">> starting leancd controller"
 "$ROOT/target/release/leancd" controller >/dev/null 2>&1 &
@@ -85,7 +93,6 @@ LEANC_PID=$!
 # covers the sync peak (fetch/parse/apply); the last sample is the idle RSS.
 # Both must stay under the budget.
 SAMPLE_SECS="${BENCH_SAMPLE_SECS:-30}"
-METRICS_URL="http://127.0.0.1:19090/metrics"
 
 echo ">> sampling RSS for ${SAMPLE_SECS}s (self peak/idle + process-tree peak/idle)"
 PEAK=0
@@ -94,13 +101,10 @@ PEAK_TREE=0
 IDLE_TREE=0
 end=$(( $(date +%s) + SAMPLE_SECS ))
 while [ "$(date +%s)" -lt "$end" ]; do
-  # leancd's own RSS, from its self-published metric.
-  if sample="$(curl -fsS "$METRICS_URL" 2>/dev/null \
-               | awk '/^leancd_rss_bytes / {print $2}' | tail -1)"; then
-    if [ -n "$sample" ]; then
-      IDLE="$sample"
-      [ "$sample" -gt "$PEAK" ] && PEAK="$sample"
-    fi
+  # leancd's own RSS, read directly from the process.
+  if s="$(self_rss_bytes "$LEANC_PID")" && [ -n "$s" ] && [ "$s" -gt 0 ]; then
+    IDLE="$s"
+    [ "$s" -gt "$PEAK" ] && PEAK="$s"
   fi
   # Whole process tree: leancd + git (and any ssh) subprocesses it spawns.
   if t="$(tree_rss_bytes "$LEANC_PID")"; then
@@ -111,7 +115,7 @@ while [ "$(date +%s)" -lt "$end" ]; do
 done
 
 if [ "$PEAK" -eq 0 ]; then
-  echo "FAIL: could not read leancd_rss_bytes metric during sampling" >&2
+  echo "FAIL: could not read leancd RSS during sampling" >&2
   exit 1
 fi
 

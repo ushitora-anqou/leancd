@@ -62,10 +62,6 @@ pub struct CommonArgs {
     #[arg(long, env = "LEANCD_STATE_CONFIGMAP", default_value = "leancd-state")]
     pub state_configmap: String,
 
-    /// Address for the Prometheus metrics endpoint.
-    #[arg(long, env = "LEANCD_METRICS_ADDR", default_value = "0.0.0.0:9090")]
-    pub metrics_addr: String,
-
     /// Local working directory for the checkout.
     #[arg(long, env = "LEANCD_WORK_DIR", default_value = "/tmp/leancd-work")]
     pub work_dir: String,
@@ -110,7 +106,6 @@ impl CommonArgs {
             poll_interval,
             namespace: self.namespace.clone(),
             state_configmap: self.state_configmap.clone(),
-            metrics_addr: self.metrics_addr.clone(),
             work_dir: self.work_dir.clone(),
             git_username_env: self.git_username_env.clone(),
             git_password_env: self.git_password_env.clone(),

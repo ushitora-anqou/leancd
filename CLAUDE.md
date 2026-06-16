@@ -36,7 +36,7 @@ make test                      # == nix flake check : full CI (fmt, clippy -D wa
 
 The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provides the toolchain, plus `curl`, `kind`, `kubectl` in the dev shell. `make test` runs the complete CI gate (clippy denies warnings, `cargo-deny` allows permissive licenses only — MIT/Apache-2.0/BSD-3-Clause/BSL-1.0/ISC/Unicode-3.0; see `deny.toml`).
 
-**RSS benchmark** (`make bench` / `./bench/bench.sh`): spins up a `kind` cluster, generates N namespaces × Deployment/StatefulSet/ConfigMap/Service into a local Git repo, runs a release build of leancd against it, and samples two footprints in parallel: the **self** RSS (`leancd_rss_bytes` metric) and the **tree** RSS (leancd + git/ssh subprocesses, summed via `ps` — shared pages double-counted, so deliberately conservative). It fails if any of the self/tree peak/idle RSS ≥ the budget. Tunables: `BENCH_NAMESPACE_COUNT` (default 15), `RSS_BUDGET_MIB` (default 100), `BENCH_SAMPLE_SECS` (default 30), `KIND_CLUSTER_NAME`.
+**RSS benchmark** (`make bench` / `./bench/bench.sh`): spins up a `kind` cluster, generates N namespaces × Deployment/StatefulSet/ConfigMap/Service into a local Git repo, runs a release build of leancd against it, and samples two footprints in parallel: the **self** RSS (leancd's own process, read via `ps`) and the **tree** RSS (leancd + git/ssh subprocesses, summed via `ps` — shared pages double-counted, so deliberately conservative). It fails if any of the self/tree peak/idle RSS ≥ the budget. Tunables: `BENCH_NAMESPACE_COUNT` (default 15), `RSS_BUDGET_MIB` (default 100), `BENCH_SAMPLE_SECS` (default 30), `KIND_CLUSTER_NAME`.
 
 ## Architecture
 
@@ -51,7 +51,7 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 3. `manifest::parse_dir` — streaming, per-document YAML parse into untyped `RawManifest`s; inject the managed-by label into each.
 4. **Full apply** when `force || first run || sha changed`; otherwise **drift-check** (`drift::detect`) and re-apply only if drift is found.
 5. `prune::prune` — delete keys in the prior applied set that are absent from the current Git set.
-6. Write updated state (new SHA, applied keys, counts) back to the ConfigMap; update Prometheus gauges.
+6. Write updated state (new SHA, applied keys, counts) back to the ConfigMap; update OTel instruments.
 
 ### Memory strategy — do not violate these
 
@@ -75,7 +75,7 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 | `prune.rs` | set-diff deletion of resources removed from Git (`ResourceKey` identity) |
 | `drift.rs` | per-GVK `List` + subset comparison |
 | `state.rs` | single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
-| `metrics.rs` | Prometheus `/metrics` over a minimal `tokio::net` listener; exposes `leancd_rss_bytes` |
+| `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics via `PeriodicReader`; exposes `leancd_rss_bytes`. No HTTP listener. |
 
 ## Implementation notes worth remembering
 

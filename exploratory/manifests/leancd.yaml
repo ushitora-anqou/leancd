@@ -91,13 +91,12 @@ spec:
               value: app
             - name: LEANCD_STATE_CONFIGMAP
               value: leancd-state
-            - name: LEANCD_METRICS_ADDR
-              value: 0.0.0.0:9090
             - name: LEANCD_WORK_DIR
               value: /tmp/leancd-work
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector:4318
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
           envFrom:
             - secretRef:
                 name: leancd-git-credentials
-          ports:
-            - name: metrics
-              containerPort: 9090

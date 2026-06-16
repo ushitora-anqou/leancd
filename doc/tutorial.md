@@ -293,14 +293,16 @@ kubectl get configmap leancd-demo   # NotFound
 
 ## 11. Inspect metrics
 
-Port-forward the metrics Service and read `/metrics`:
+leancd pushes metrics over OTLP/HTTP; it serves no endpoint itself. Deploy an
+OpenTelemetry Collector that receives OTLP and re-exports Prometheus text, then
+port-forward the collector and read its `/metrics`:
 
 ```sh
-# in a second terminal:
-kubectl -n leancd port-forward svc/leancd-metrics 9090:9090
+# in a second terminal (collector's Prometheus exporter on :8889):
+kubectl -n leancd port-forward svc/otel-collector 8889:8889
 
 # then:
-curl -s localhost:9090/metrics | grep leancd_
+curl -s localhost:8889/metrics | grep leancd_
 ```
 
 Look for:

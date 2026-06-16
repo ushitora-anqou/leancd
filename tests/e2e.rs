@@ -324,25 +324,41 @@ async fn cli_status() {
     assert!(out.contains("managed:"), "missing managed line: {out}");
 }
 
-/// Scenario 8: `/metrics` exposes the always-present metric series and a sane
-/// RSS reading. `leancd_drift_detected` is a labelled gauge that only emits a
-/// series while drift is present, so it is exercised indirectly by the drift
-/// scenario (drift self-heal implies detection worked) rather than here.
+/// Scenario 8: leancd's metrics reach the OTel collector and re-export on its
+/// Prometheus endpoint with a sane RSS reading. `leancd_drift_detected` only
+/// emits a series while drift is present, so it is exercised indirectly by the
+/// drift scenario (drift self-heal implies detection worked) rather than here.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires docker + kind; run with: make e2e"]
 async fn metrics() {
     common::Fixture::get();
     let text = common::metrics::scrape();
-    for name in [
-        "leancd_sync_total",
-        "leancd_sync_errors_total",
-        "leancd_sync_last_success_timestamp_seconds",
-        "leancd_managed_resources",
-        "leancd_rss_bytes",
-    ] {
-        assert!(text.contains(name), "metric {name} missing:\n{text}");
-    }
-    let rss = common::metrics::metric_value(&text, "leancd_rss_bytes").expect("rss readable");
+    // leancd pushes several distinct metric families (at least 5:
+    // sync_total/sync_errors_total/last_success_timestamp_seconds/
+    // managed_resources/rss_bytes; drift_detected is added only while drift is
+    // present, so it is exercised by the drift scenario instead). Count unique
+    // families rather than exact names so the OTel→Prometheus `_total`/unit
+    // renaming does not make this assertion brittle.
+    let families: std::collections::HashSet<String> = text
+        .lines()
+        .filter(|l| l.starts_with("leancd_") && !l.starts_with('#'))
+        .filter_map(|l| l.split_whitespace().next())
+        .filter_map(|t| t.split('{').next().map(String::from))
+        .collect();
+    assert!(
+        families.len() >= 5,
+        "expected at least 5 leancd metric families, got {}: {:?}\n{text}",
+        families.len(),
+        families
+    );
+    // RSS is pushed as leancd_rss_bytes; take the most recent sample value.
+    let rss = text
+        .lines()
+        .filter(|l| l.starts_with("leancd_rss_bytes") && !l.starts_with('#'))
+        .filter_map(|l| l.rsplit(' ').next())
+        .filter_map(|v| v.parse::<f64>().ok().map(|f| f as i64))
+        .next_back()
+        .expect("leancd_rss_bytes sample present");
     assert!(rss > 0, "rss should be positive");
     assert!(
         rss < 100 * 1024 * 1024,

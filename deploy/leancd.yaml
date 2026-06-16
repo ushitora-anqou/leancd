@@ -3,6 +3,13 @@
 # Apply with:
 #   kubectl apply -f deploy/leancd.yaml
 #
+# Metrics are exported over OTLP/HTTP (push) to an OpenTelemetry Collector.
+# leancd runs no HTTP listener of its own. Point it at your collector with the
+# standard `OTEL_EXPORTER_OTLP_*` env vars (endpoint/protocol set below; auth
+# via `OTEL_EXPORTER_OTLP_HEADERS`). The collector is NOT deployed here — bring
+# your own (e.g. the `otel/opentelemetry-collector` chart) and set
+# `OTEL_EXPORTER_OTLP_ENDPOINT` to its OTLP/HTTP receiver.
+#
 # Git credentials are read from a Secret named `leancd-git-credentials`.
 # For HTTPS basic auth, set GIT_USERNAME and GIT_PASSWORD. For SSH, set
 # GIT_SSH_KEY to a PEM private key (the repo URL must be `git@host:...` or
@@ -87,18 +94,18 @@ spec:
               value: "leancd"
             - name: LEANCD_POLL_INTERVAL
               value: "60s"
-            - name: LEANCD_METRICS_ADDR
-              value: "0.0.0.0:9090"
             - name: LEANCD_WORK_DIR
               value: "/tmp/leancd-work"
+            # --- metrics: OTLP/HTTP push to an OpenTelemetry Collector ---
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: "http/protobuf"
           # --- secret configuration (only credentials, from a Secret) ---
           envFrom:
             - secretRef:
                 name: leancd-git-credentials
                 optional: true
-          ports:
-            - name: metrics
-              containerPort: 9090
           resources:
             # RSS stays under 100MiB (see bench/); the limit leaves headroom.
             limits:
@@ -107,16 +114,3 @@ spec:
             requests:
               memory: 32Mi
               cpu: 50m
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: leancd-metrics
-  namespace: leancd
-spec:
-  selector:
-    app.kubernetes.io/name: leancd
-  ports:
-    - name: metrics
-      port: 9090
-      targetPort: metrics

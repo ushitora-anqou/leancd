@@ -26,14 +26,14 @@ pub struct Reconciler {
 impl Reconciler {
     /// One reconciliation pass. `force` enables force-conflict server-side apply.
     pub async fn run_once(&self, force: bool) -> Result<()> {
-        self.metrics.sync_total.inc();
+        self.metrics.sync_total.add(1, &[]);
         match self.reconcile(force).await {
             Ok(()) => {
-                self.metrics.last_success_epoch.set(now_epoch() as i64);
+                self.metrics.set_last_success_epoch(now_epoch() as i64);
                 Ok(())
             }
             Err(e) => {
-                self.metrics.sync_errors.inc();
+                self.metrics.sync_errors.add(1, &[]);
                 if let Err(state_err) = self.record_error(&e).await {
                     tracing::warn!(error = %state_err, "failed to record error in state");
                 }
@@ -113,10 +113,9 @@ impl Reconciler {
         state::write(&self.client, &self.cfg, &new_state).await?;
 
         self.metrics
-            .managed_resources
-            .set(current_keys.len() as i64);
+            .set_managed_resources(current_keys.len() as i64);
         // Per-GVK drift counts; reset first so resolved drifts clear next pass.
-        self.metrics.drift_detected.reset();
+        self.metrics.reset_drift();
         let mut drift_by_gvk: HashMap<(String, String, String), i64> = HashMap::new();
         for d in &drifts {
             *drift_by_gvk
@@ -128,10 +127,7 @@ impl Reconciler {
                 .or_default() += 1;
         }
         for ((group, version, kind), n) in drift_by_gvk {
-            self.metrics
-                .drift_detected
-                .with_label_values(&[&group, &version, &kind])
-                .set(n);
+            self.metrics.set_drift(&group, &version, &kind, n);
         }
 
         tracing::info!(

@@ -59,7 +59,7 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | `drift.rs` | Per-GVK `List` + subset comparison for drift detection |
 | `prune.rs` | Two-signal deletion of resources removed from Git |
 | `state.rs` | Single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
-| `metrics.rs` | Prometheus `/metrics` over a minimal `tokio::net` listener; exposes `leancd_rss_bytes` |
+| `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics; exposes `leancd_rss_bytes`. No HTTP listener. |
 | `error.rs` | `thiserror` `Error` enum (`Git`, `Manifest`, `Kube`, `Config`, `Io`, `Other`) and `Result` alias |
 
 ## 3. The single binary and its three subcommands
@@ -69,7 +69,7 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 
 | Subcommand | Behaviour | Entry |
 |---|---|---|
-| `controller` | Long-lived: spawns the metrics server, then runs `run_loop()` until shutdown | `run_controller` |
+| `controller` | Long-lived: initialises the OTel meter provider, then runs `run_loop()` until shutdown | `run_controller` |
 | `sync [--force]` | One reconciliation pass (`run_once(force)`), then exits | `run_sync` |
 | `status` | Reads the state ConfigMap and prints it, then exits (no reconciliation) | `run_status` |
 
@@ -79,12 +79,14 @@ identical in both paths.
 `main.rs` runs under `#[tokio::main(flavor = "current_thread")]` — a
 single-threaded async runtime — to avoid per-thread stack memory.
 `tracing_subscriber` is initialised from
-`RUST_LOG` (default `info`). In `controller`, the reconciliation loop and the
-metrics server are each spawned as tasks; on `SIGINT` or `SIGTERM`
-(`shutdown_signal`) both task handles are `abort()`-ed and the process exits.
+`RUST_LOG` (default `info`). In `controller`, the reconciliation loop is spawned
+as one task and the OTel meter provider is initialised; on `SIGINT` or `SIGTERM`
+(`shutdown_signal`) the loop task is `abort()`-ed and the meter provider is
+`shutdown()` to flush a final export before the process exits.
 
 `sync` and `status` are fire-and-forget: they construct a `Reconciler` (or just
-a `Client` for `status`), do one pass, and return. They start no metrics server.
+a `Client` for `status`), do one pass, and return. `sync` also builds a meter
+provider and flushes it on exit; `status` instruments nothing.
 
 ## 4. Reconciliation flow
 
@@ -307,29 +309,32 @@ single bad value cannot wedge reconciliation. `status` renders this ConfigMap.
 
 ## 11. Metrics
 
-`metrics::serve` binds a `tokio::net::TcpListener` to `metrics_addr` and, per
-connection, refreshes `leancd_rss_bytes`, gathers the registry, and writes a
-single HTTP/1.1 response with
-`Content-Type: text/plain; version=0.0.4; charset=utf-8`. Only `/metrics` is
-served; pull-based scraping only (no push queue).
+leancd exposes no HTTP endpoint. It instruments metrics with the OpenTelemetry
+SDK and pushes them over OTLP/HTTP (protobuf, port 4318) to a collector at fixed
+intervals (`PeriodicReader`, default 60s; `OTEL_METRIC_EXPORT_INTERVAL`). The
+endpoint, protocol, headers, and timeout come from the standard
+`OTEL_EXPORTER_OTLP_*` environment variables — leancd itself takes no metrics
+flag. The meter provider is flushed (`shutdown()`) on controller exit.
 
-RSS is read on every scrape via `procfs::process::Process::myself().statm()`
-— `statm.resident * procfs::page_size()` — so the gauge is always fresh and
-reflects the live process footprint, not a periodic sample.
+Counters are incremented directly; the gauges are observable gauges backed by a
+shared `Mutex`-guarded state, reported on each collection. RSS is read by an
+observable-gauge callback via `procfs::process::Process::myself().statm()` —
+`statm.resident * procfs::page_size()` — so it reflects the live process
+footprint at collection time.
 
 | Metric | Type | Labels | Updated |
 |---|---|---|---|
 | `leancd_sync_total` | counter | — | every `run_once` |
 | `leancd_sync_errors_total` | counter | — | failed reconcile |
-| `leancd_sync_last_success_timestamp_seconds` | gauge | — | on success |
-| `leancd_drift_detected` | gauge vec | `group`, `version`, `kind` | reset each pass, then set per GVK |
-| `leancd_managed_resources` | gauge | — | each pass |
-| `leancd_rss_bytes` | gauge | — | on each scrape |
+| `leancd_sync_last_success_timestamp_seconds` | observable gauge | — | on success |
+| `leancd_drift_detected` | observable gauge | `group`, `version`, `kind` | reset each pass, then set per GVK |
+| `leancd_managed_resources` | observable gauge | — | each pass |
+| `leancd_rss_bytes` | observable gauge | — | on each collection |
 
 ## 12. Runtime, concurrency, and failure modes
 
 - **Single-threaded async runtime** (`current_thread`); `git` is a separate
-  process; the metrics server spawns one short-lived task per scrape.
+  process; the OTel `PeriodicReader` runs metric export on its own thread.
 - **Idempotent applies.** `controller` and a concurrent `sync` (e.g. via
   `kubectl exec`) both use SSA under one `field_manager`, so concurrent
   reconciles are safe; the worst case is redundant work.
@@ -348,11 +353,14 @@ The shipped manifest ([`../deploy/leancd.yaml`](../deploy/leancd.yaml)) creates:
 
 - a `Namespace`, `ServiceAccount`, a broad `ClusterRole`/`ClusterRoleBinding`
   (leancd applies arbitrary kinds including CRDs and cluster-scoped resources,
-  so the default is broad — narrow it in production),
+  so the default is broad — narrow it in production), and
 - the `Deployment` (image `leancd:latest`, `imagePullPolicy: IfNotPresent`,
   `args: ["controller"]`, `LEANCD_*` env, credentials via `envFrom` a Secret
-  marked `optional`, resources request 32Mi/50m and limit 128Mi/200m), and
-- a `Service` exposing the metrics port.
+  marked `optional`, resources request 32Mi/50m and limit 128Mi/200m).
+
+leancd runs no HTTP listener: it pushes metrics over OTLP/HTTP, so the manifest
+declares no `Service` or exposed port — point it at your own collector via
+`OTEL_EXPORTER_OTLP_ENDPOINT`.
 
 The runtime image is `debian:bookworm-slim` plus `git`, `ca-certificates`, and
 `openssh-client` (the latter two for HTTPS and SSH transports; `git` because

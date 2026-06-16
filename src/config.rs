@@ -28,8 +28,6 @@ pub struct Config {
     pub namespace: String,
     /// Name of the ConfigMap leancd writes its sync state into.
     pub state_configmap: String,
-    /// `host:port` for the Prometheus `/metrics` endpoint.
-    pub metrics_addr: String,
     /// Local working directory that holds the shallow checkout.
     pub work_dir: String,
 
@@ -224,7 +222,6 @@ mod tests {
             poll_interval: std::time::Duration::from_secs(60),
             namespace: "default".into(),
             state_configmap: "leancd-state".into(),
-            metrics_addr: "0.0.0.0:9090".into(),
             work_dir: "/tmp/leancd-work".into(),
             git_username_env: "GIT_USERNAME".into(),
             git_password_env: "GIT_PASSWORD".into(),

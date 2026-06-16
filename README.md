@@ -15,7 +15,7 @@ benchmark (see [bench/](bench/)).
 - Detects cluster-side drift and re-applies the desired state.
 - Prunes resources removed from Git.
 - CLI for manual sync (`--force` to claim conflicting fields) and status.
-- Prometheus metrics at `/metrics`, including `leancd_rss_bytes`.
+- Metrics exported over OTLP/HTTP (push), including `leancd_rss_bytes`.
 - Handles **all** resource kinds, including CRDs and cluster-scoped resources.
 
 ## Non-goals (kept out to stay small and light)
@@ -55,7 +55,6 @@ Key flags:
 | `--path` | `LEANCD_PATH` | . | glob patterns of manifest directories (recursive; repeatable; comma-separated via env, e.g. `live/*/prod`) |
 | `--poll-interval` | `LEANCD_POLL_INTERVAL` | 60s | reconciliation interval |
 | `--namespace` | `LEANCD_NAMESPACE` | default | leancd's namespace |
-| `--metrics-addr` | `LEANCD_METRICS_ADDR` | 0.0.0.0:9090 | metrics endpoint |
 
 For the complete flag and environment-variable reference, authentication modes,
 metrics, tuning, and troubleshooting, see
@@ -67,9 +66,10 @@ metrics, tuning, and troubleshooting, see
 kubectl apply -f deploy/leancd.yaml
 ```
 
-The manifest installs the Namespace, ServiceAccount, RBAC, Deployment, and a
-Service for metrics. Edit the `LEANCD_*` env values for your repository, and
-create the `leancd-git-credentials` Secret for private repos.
+The manifest installs the Namespace, ServiceAccount, RBAC, and Deployment, and
+points leancd at your OpenTelemetry Collector over OTLP/HTTP (leancd runs no
+HTTP listener of its own). Edit the `LEANCD_*` env values for your repository,
+and create the `leancd-git-credentials` Secret for private repos.
 
 For a hands-on walkthrough deploying leancd into a local `kind` cluster
 (including an optional in-cluster Forgejo Git server), see
@@ -112,7 +112,7 @@ leancd as in-cluster Pods** (leancd is built into a container image via the
 root [`Dockerfile`](Dockerfile) and loaded into the kind node). It drives
 leancd's intended behaviour end-to-end across ~17 scenarios: initial apply, Git
 change detection + steady-state drift-check, drift self-heal, prune, state
-ConfigMap, the `sync`/`status`/`--force` CLI, Prometheus metrics, cluster- and
+ConfigMap, the `sync`/`status`/`--force` CLI, OTLP metrics, cluster- and
 namespaced-scope resources, CRDs, the controller polling loop, HTTPS basic-auth
 and SSH-key Git access, and error recovery.
 

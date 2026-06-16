@@ -14,7 +14,7 @@ This directory verifies the headline guarantee: leancd keeps its RSS under
    kind cluster via kubeconfig.
 4. Samples two footprints in parallel from startup through the settled state,
    capturing the **peak** (max) and **idle** (final) value of each:
-   - **self** — leancd's own RSS, from the `leancd_rss_bytes` Prometheus metric.
+   - **self** — leancd's own RSS, read directly from the process via `ps`.
    - **tree** — the whole process tree (leancd + git/ssh subprocesses), summed
      via `ps`. Shared pages are double-counted, so this deliberately
      overestimates (a conservative regression gate).
@@ -23,7 +23,7 @@ This directory verifies the headline guarantee: leancd keeps its RSS under
 
 ## Prerequisites
 
-- [kind](https://kind.sigs.k8s.io/), `kubectl`, `git`, `curl`
+- [kind](https://kind.sigs.k8s.io/), `kubectl`, `git`
 - Rust toolchain (`cargo`)
 
 ## Running
@@ -72,4 +72,4 @@ spawns (the `git` CLI for fetch/clone/reset, plus any `ssh` it shells out to).
 Because RSS double-counts pages shared between processes, the tree total is an
 overestimate — deliberately conservative. This verifies that git's memory is
 accounted for too, even though git runs as a separate process and is excluded
-from leancd's own `leancd_rss_bytes`.
+from leancd's own RSS (read via `ps`).

@@ -7,7 +7,7 @@
 # across scales (bench/README.md documents that this is a manual/external step,
 # not part of `nix flake check`, because it needs kind/Docker).
 #
-# Prereqs: same as bench.sh (kind, kubectl, git, curl, cargo).
+# Prereqs: same as bench.sh (kind, kubectl, git, cargo).
 #
 # Tunables:
 #   SCALE_NS_LEVELS   space-separated namespace counts (default "8 15 20")

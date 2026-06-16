@@ -70,8 +70,17 @@ impl Fixture {
         // A repo the dormant controller points at (auto-initialised on `main`
         // so its first reconcile clones cleanly without touching scenario state).
         forgejo.create_repo("controller-idle", true);
-        // Deploy in-cluster leancd (dormant controller + /metrics + exec host).
+        // Deploy in-cluster leancd + OTel collector (metrics over OTLP/HTTP).
         run(&["kubectl", "apply", "-f", "tests/leancd.yaml"]);
+        run(&[
+            "kubectl",
+            "wait",
+            "-n",
+            "leancd",
+            "--for=condition=Available",
+            "deploy/otel-collector",
+            "--timeout=240s",
+        ]);
         run(&[
             "kubectl",
             "wait",

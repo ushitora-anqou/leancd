@@ -19,6 +19,7 @@ use kube::Client;
 
 use crate::cli::{Cli, Command};
 use crate::error::Result;
+use opentelemetry::metrics::MeterProvider as _;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
@@ -41,13 +42,9 @@ async fn main() -> anyhow::Result<()> {
 /// Run as a long-lived controller: metrics server + polling reconciliation loop.
 async fn run_controller(cfg: config::Config) -> Result<()> {
     let client = Client::try_default().await?;
-    let metrics = Arc::new(metrics::Metrics::new()?);
-
-    let m = metrics.clone();
-    let addr = cfg.metrics_addr.clone();
-    let metrics_handle = tokio::spawn(async move {
-        let _ = metrics::serve(&addr, m).await;
-    });
+    let provider = metrics::init_meter_provider()?;
+    let meter = provider.meter("leancd");
+    let metrics = Arc::new(metrics::Metrics::new(&meter));
 
     let recon = reconcile::Reconciler {
         client,
@@ -62,20 +59,28 @@ async fn run_controller(cfg: config::Config) -> Result<()> {
     shutdown_signal().await;
     tracing::info!("shutdown signal received, stopping");
     recon_handle.abort();
-    metrics_handle.abort();
+    if let Err(e) = provider.shutdown() {
+        tracing::warn!(error = %e, "failed to flush metrics on shutdown");
+    }
     Ok(())
 }
 
 /// Perform a single reconciliation pass (optionally with force-conflict apply).
 async fn run_sync(cfg: config::Config, force: bool) -> Result<()> {
     let client = Client::try_default().await?;
-    let metrics = Arc::new(metrics::Metrics::new()?);
+    let provider = metrics::init_meter_provider()?;
+    let meter = provider.meter("leancd");
+    let metrics = Arc::new(metrics::Metrics::new(&meter));
     let recon = reconcile::Reconciler {
         client,
         cfg,
         metrics,
     };
-    recon.run_once(force).await
+    let res = recon.run_once(force).await;
+    if let Err(e) = provider.shutdown() {
+        tracing::warn!(error = %e, "failed to flush metrics on shutdown");
+    }
+    res
 }
 
 /// Print the persisted sync state.

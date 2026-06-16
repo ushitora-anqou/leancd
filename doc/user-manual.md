@@ -108,14 +108,15 @@ for `controller` are noted there.
 
 ### `leancd controller`
 
-Runs as a long-lived controller: starts the `/metrics` server, then reconciles
-on `<poll-interval>` forever. **Deploy this** as a `Deployment`.
+Runs as a long-lived controller: initialises the OTel meter provider, then
+reconciles on `<poll-interval>` forever. **Deploy this** as a `Deployment`.
 
 ```sh
 leancd controller --repo-url https://github.com/org/manifests.git
 ```
 
-On `SIGINT`/`SIGTERM` it stops the reconcile loop and metrics server and exits.
+On `SIGINT`/`SIGTERM` it aborts the reconcile loop and flushes the OTel meter
+provider (one final export), then exits.
 
 ### `leancd sync [--force]`
 
@@ -134,8 +135,8 @@ field-conflict error, not routinely.
 ### `leancd status`
 
 Read-only: prints the contents of the state ConfigMap (last SHA, sync count,
-managed/drift counts, last sync time, last error). No reconciliation, no
-metrics server.
+managed/drift counts, last sync time, last error). No reconciliation or metrics
+instrumentation.
 
 ```sh
 leancd status
@@ -168,7 +169,6 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 | `--poll-interval` | `LEANCD_POLL_INTERVAL` | `60s` | controller | reconciliation interval (see [§5.2](#52-duration-parser)) |
 | `--namespace` | `LEANCD_NAMESPACE` | `default` | all | leancd's namespace (state ConfigMap; default ns for ns-less resources) |
 | `--state-configmap` | `LEANCD_STATE_CONFIGMAP` | `leancd-state` | all | state ConfigMap name |
-| `--metrics-addr` | `LEANCD_METRICS_ADDR` | `0.0.0.0:9090` | controller | `/metrics` listen address |
 | `--work-dir` | `LEANCD_WORK_DIR` | `/tmp/leancd-work` | all | local checkout directory |
 | `--git-username-env` | `LEANCD_GIT_USERNAME_ENV` | `GIT_USERNAME` | all | name of the env var holding the HTTPS username (see [§5.3](#53-git-credential-indirection)) |
 | `--git-password-env` | `LEANCD_GIT_PASSWORD_ENV` | `GIT_PASSWORD` | all | name of the env var holding the HTTPS password/token |
@@ -178,10 +178,9 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 | `--field-manager` | — | `leancd` | all | SSA field manager name |
 | `--force` | — | `false` | `sync` only | force-conflict server-side apply |
 
-`--poll-interval`, `--metrics-addr`, and `--git-*-env` are accepted by all
-subcommands (they are part of `CommonArgs`) but only `controller` uses
-`--poll-interval` and `--metrics-addr` in a meaningful way — `sync`/`status`
-run one pass and do not poll or serve metrics.
+`--poll-interval` and `--git-*-env` are accepted by all subcommands (they are
+part of `CommonArgs`) but only `controller` uses `--poll-interval` in a
+meaningful way — `sync`/`status` run one pass and do not poll.
 
 ### 5.2 Duration parser
 
@@ -296,23 +295,28 @@ repo.
 
 ## 7. Metrics reference
 
-leancd serves Prometheus metrics at `/metrics` over a minimal HTTP listener on
-`--metrics-addr` (default `0.0.0.0:9090`). The content type is
-`text/plain; version=0.0.4; charset=utf-8`. Only the `controller` subcommand
-starts the metrics server.
+leancd exposes no HTTP endpoint. It instruments metrics with the OpenTelemetry
+SDK and pushes them over **OTLP/HTTP** (protobuf, port 4318) to a collector at
+fixed intervals (`PeriodicReader`, default 60s). Configuration is via the
+standard `OTEL_EXPORTER_OTLP_*` environment variables — there is no metrics
+flag. Only the `controller`/`sync` subcommands export (the provider is flushed
+on exit). Point an OpenTelemetry Collector's OTLP/HTTP receiver at
+`OTEL_EXPORTER_OTLP_ENDPOINT` (and scrape *its* Prometheus exporter if you want
+text-format output).
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
 | `leancd_sync_total` | counter | — | Number of reconciliation passes |
 | `leancd_sync_errors_total` | counter | — | Number of failed reconciliations |
-| `leancd_sync_last_success_timestamp_seconds` | gauge | — | Unix timestamp of the last successful sync |
-| `leancd_drift_detected` | gauge | `group`, `version`, `kind` | Drifted resources, broken down by GVK (reset each pass) |
-| `leancd_managed_resources` | gauge | — | Number of resources managed by leancd |
-| `leancd_rss_bytes` | gauge | — | Process resident set size in bytes (refreshed on each scrape) |
+| `leancd_sync_last_success_timestamp_seconds` | observable gauge | — | Unix timestamp of the last successful sync |
+| `leancd_drift_detected` | observable gauge | `group`, `version`, `kind` | Drifted resources, broken down by GVK (reset each pass) |
+| `leancd_managed_resources` | observable gauge | — | Number of resources managed by leancd |
+| `leancd_rss_bytes` | observable gauge | — | Process resident set size in bytes (read at each collection) |
 
 `leancd_rss_bytes` is the headline metric: it must stay under the 100MiB budget
-at both the sync peak and idle. It is read fresh on every scrape from
-`/proc/<pid>/statm`, so it reflects the live footprint.
+at both the sync peak and idle. It is read fresh at each collection from
+`/proc/<pid>/statm` via an observable-gauge callback, so it reflects the live
+footprint.
 
 `leancd_drift_detected` is reset to zero at the start of each pass and then set
 per GVK from that pass's results, so a drift that was fixed clears on the next
@@ -452,7 +456,7 @@ truth; back up your repository, not the state ConfigMap.
 | Prune deletes nothing after state loss | Expected: the safety-net prune only covers previously-applied GVKs | Re-apply, then remove from Git; the next pass prunes |
 | SSA `fieldManagerConflict` / apply conflict | Another manager owns a field | `leancd sync --force` once, or reconcile with the other manager |
 | First reconcile re-applies everything | Expected: no prior state | None — this is correct first-run behaviour |
-| `leancd_rss_bytes` absent or 0 | `/proc` unavailable (non-Linux host) | Run on Linux |
+| `leancd_rss_bytes` absent or 0 | `/proc` unavailable (non-Linux host), or metrics not reaching the collector | Run on Linux; check `OTEL_EXPORTER_OTLP_ENDPOINT` and that the collector is up |
 | `status` says `no sync state recorded yet` | First run hasn't completed, or state ConfigMap was deleted | Wait one pass; or run `leancd sync` |
 
 ## 11. Security considerations
