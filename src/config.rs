@@ -1,9 +1,9 @@
 //! Runtime configuration for leancd.
 //!
-//! Per the design: all configuration is provided via command-line flags, and
-//! only secrets (git credentials) are read from the environment, which in
-//! Kubernetes are injected from a Secret. A single process maps to a single
-//! Git repository (the configured path).
+//! All configuration is provided via command-line flags, and only secrets (git
+//! credentials) are read from the environment, which in Kubernetes are injected
+//! from a Secret. A single process maps to a single Git repository (the
+//! configured path).
 
 use crate::error::{Error, Result};
 

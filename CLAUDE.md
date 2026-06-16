@@ -12,7 +12,7 @@
 
 This memory budget is **the headline goal** and is verified by an automated benchmark. Every design and implementation decision is justified against "does this increase RSS?". When in doubt, prefer fewer allocations, no caching, no background stores, and shelling out to `git` over embedding a Git library.
 
-Full rationale: [`doc/design.md`](doc/design.md) (Japanese). Read at least §1 (goals), §4 (memory strategy), and 付録 B (implementation notes — several design-doc statements were changed during implementation).
+Rationale summary: RSS ≤ 100MiB is the headline goal, favoured over feature breadth, real-time responsiveness, and implementation convenience (Argo CD runs at hundreds of MiB–GiB, Flux at tens–100+MiB; leancd targets ≤100MiB). The trade-offs that enforce it — no cluster-wide cache, no background state, shallow clones, streaming YAML parses, a single-threaded runtime, minimal dependencies — are detailed in `doc/architecture.md` §14.
 
 ## Commands
 
@@ -25,9 +25,10 @@ make all                       # fmt + build + test-unit
 make fmt                       # cargo fmt + taplo fmt (Cargo.toml, taplo.toml, deny.toml)
 make bench                     # RSS benchmark against a kind cluster (see below)
 make e2e                       # end-to-end tests: kind cluster with in-cluster
-                               #   Forgejo + leancd Pods (design.md behaviour).
-                               #   #[ignore]d, so not in nix flake check.
-                               #   Concurrency (design §3.4) is unit-test
+                               #   Forgejo + leancd Pods (leancd's intended
+                               #   behaviour). #[ignore]d, so not in nix flake check.
+                               #   Concurrency (controller vs sync running at once,
+                               #   safe via one SSA fieldManager) is unit-test
                                #   territory, out of e2e scope.
 make test                      # == nix flake check : full CI (fmt, clippy -D warnings,
                                #   nextest, cargo-deny, cargo-audit)
@@ -52,11 +53,11 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 5. `prune::prune` — delete keys in the prior applied set that are absent from the current Git set.
 6. Write updated state (new SHA, applied keys, counts) back to the ConfigMap; update Prometheus gauges.
 
-### Memory strategy — do not violate these (see design §4)
+### Memory strategy — do not violate these
 
 - **No kube-rs informer/cache.** `kube_util.rs` never builds a `Controller` or `Store`. Every interaction is a direct `List`/`Get`/`Patch` on `DynamicObject` and returns immediately.
 - **Drift via periodic `List`, never `Watch`.** One `List` per managed GVK (filtered by the managed-by label), then a recursive subset check (`spec_subset`) that tolerates server-injected defaults.
-- **`git` via shell-out** (`tokio::process::Command`), chosen deliberately over a Git library: git runs as a separate process so its memory is **not** counted in leancd's RSS. The design doc's references to `gix`/`spawn_blocking` are historical; the implementation uses `tokio::process`.
+- **`git` via shell-out** (`tokio::process::Command`), chosen deliberately over an embedded Git library (`gix`): git runs as a separate process so its memory is **not** counted in leancd's RSS, and shelling out gives reliable repeated fetches without the low-level API risk of `gix`.
 - **Streaming YAML parse** (`serde_yaml::Deserializer`) — one document at a time.
 - **State is one ConfigMap + a label**, not a CRD or DB. Process memory holds only: last SHA, lightweight API-discovery metadata (GVK → `ApiResource`, no resource bodies), and transient pass state.
 - **`tokio` `current_thread` runtime** (`#[tokio::main(flavor = "current_thread")]`) to minimize thread/stack memory.
@@ -78,7 +79,7 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 
 ## Implementation notes worth remembering
 
-- **`serde_yaml` is intentional, despite deprecation.** It supports the streaming `Deserializer` that `manifest.rs` needs; `serde_yml` did not. `manifest.rs` carries `#![allow(deprecated)]` on purpose. kube-rs also depends on `serde_yaml`. See design 付録 B.
+- **`serde_yaml` is intentional, despite deprecation.** It supports the streaming `Deserializer` that `manifest.rs` needs; `serde_yml` lacks an equivalent streaming-from-string API. `manifest.rs` carries `#![allow(deprecated)]` on purpose. kube-rs also depends on `serde_yaml`.
 - **kube-rs v3 discovery API**: `kube::discovery::pinned_kind(client, &gvk)` returns `(ApiResource, ApiCapabilities)`; use `caps.scope` (`Scope::Cluster` vs namespaced) to pick `Api::all_with` vs `Api::namespaced_with`. SSA is `api.patch(name, &PatchParams::apply(fm).force(), &Patch::Apply(&obj))`.
 - **TLS is rustls** (`features = ["rustls-tls"]`) — OpenSSL is intentionally avoided.
 - **Managed-by label** (`app.kubernetes.io/managed-by=leancd` by default) is injected at apply time on every resource. Pruning uses the persisted applied-set as the primary signal and the label as the safety net.

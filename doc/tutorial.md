@@ -339,7 +339,6 @@ from step 4c (its data is on an `emptyDir`, so nothing persists).
 
 - [`./user-manual.md`](./user-manual.md) — every flag, tuning, troubleshooting.
 - [`./architecture.md`](./architecture.md) — how reconciliation, drift, and
-  prune actually work.
-- [`./design.md`](./design.md) — why leancd is shaped this way (Japanese).
+  prune actually work, and why leancd is shaped this way.
 - For production: narrow the `ClusterRole`, pick a real Git host, and set
   resource limits appropriate to your scale.

@@ -6,8 +6,7 @@ variable, Git-authentication mode, metric, and operational concern.
 > This manual is the detailed companion to [`../README.md`](../README.md). It
 > does not repeat the README's overview; it deepens it. For a 20-minute hands-on
 > walkthrough see [`./tutorial.md`](./tutorial.md); for how the implementation
-> works see [`./architecture.md`](./architecture.md); for the design rationale
-> see [`./design.md`](./design.md) (Japanese).
+> works (and why it is shaped that way) see [`./architecture.md`](./architecture.md).
 
 ## 1. Introduction
 
@@ -25,8 +24,7 @@ Reading order if you are new:
 1. [`../README.md`](../README.md) — overview and quick start.
 2. [`./tutorial.md`](./tutorial.md) — deploy leancd into a `kind` cluster.
 3. This manual — full reference.
-4. [`./architecture.md`](./architecture.md) — internals.
-5. [`./design.md`](./design.md) — why leancd is shaped this way.
+4. [`./architecture.md`](./architecture.md) — internals and the reasoning behind each mechanism.
 
 ## 2. Core concepts
 
@@ -473,8 +471,7 @@ truth; back up your repository, not the state ConfigMap.
 
 ## 12. Non-goals
 
-These are deliberately out of scope (see [`../README.md`](../README.md) and
-[`./design.md`](./design.md)):
+These are deliberately out of scope (see [`../README.md`](../README.md)):
 
 - No Kustomize, Helm, or Jsonnet — plain YAML only.
 - No owner-reference traversal for pruning.
@@ -501,6 +498,6 @@ These are deliberately out of scope (see [`../README.md`](../README.md) and
 
 - [`../README.md`](../README.md) — project overview and quick start.
 - [`./tutorial.md`](./tutorial.md) — hands-on deployment into a `kind` cluster.
-- [`./architecture.md`](./architecture.md) — how the implementation works.
-- [`./design.md`](./design.md) — design rationale (Japanese).
+- [`./architecture.md`](./architecture.md) — how the implementation works and
+  why it is shaped that way.
 - [`../bench/README.md`](../bench/README.md) — RSS benchmark.

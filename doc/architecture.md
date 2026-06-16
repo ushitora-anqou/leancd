@@ -1,10 +1,10 @@
 # leancd Architecture
 
-This document describes **how the current implementation works**. It is the
-"how it works today" companion to [`design.md`](./design.md), which records the
-*why* behind the design (goals, alternatives considered, memory-strategy
-rationale). Where this document would stray into *why*, it links to
-`design.md` instead of restating it.
+This document describes **how the current implementation works** and, where it
+matters, *why* it works that way. The overriding goal is keeping process RSS at
+or below 100MiB; every mechanism below exists to preserve that budget, and the
+trade-offs it forces — no cluster-wide cache, no background state, shelling out
+to `git` — are noted inline where relevant.
 
 For a quick overview see [`../README.md`](../README.md); for the complete
 feature reference (every flag, env var, metric) see
@@ -36,8 +36,11 @@ reconciliation engine. One running process syncs exactly one Git repository
 ```
 
 The overriding invariant is that process RSS stays **≤ 100MiB** at all times
-(idle and at sync peak). Every mechanism below exists to preserve that
-invariant; the reasoning is in [`design.md` §4](./design.md).
+(idle and at sync peak). That budget is the project's headline goal — favoured
+over feature breadth, real-time responsiveness, and implementation convenience
+— so every mechanism below exists to preserve it: no cluster-wide cache, no
+background state, shallow clones, streaming parses, a single-threaded runtime,
+and minimal dependencies.
 
 ## 2. Module map
 
@@ -74,8 +77,8 @@ Because manual and automatic sync share `run_once`, the apply logic is
 identical in both paths.
 
 `main.rs` runs under `#[tokio::main(flavor = "current_thread")]` — a
-single-threaded async runtime — to minimise thread/stack memory (see
-[`design.md` §4](./design.md)). `tracing_subscriber` is initialised from
+single-threaded async runtime — to avoid per-thread stack memory.
+`tracing_subscriber` is initialised from
 `RUST_LOG` (default `info`). In `controller`, the reconciliation loop and the
 metrics server are each spawned as tasks; on `SIGINT` or `SIGTERM`
 (`shutdown_signal`) both task handles are `abort()`-ed and the process exits.
@@ -139,7 +142,8 @@ between passes and logging (never aborting on) per-pass errors.
 leancd shells out to `git` (`tokio::process::Command`) rather than embedding a
 Git library. Because `git` runs as a separate process, its memory is **not**
 counted in leancd's RSS — this is the core reason the shell-out approach was
-chosen (see [`design.md` §6 and 付録B](./design.md)).
+chosen over an embedded `gix`, whose low-level repeated-fetch API would also
+add implementation risk for no RSS benefit.
 
 `git_sync::sync` keeps a depth-1 shallow checkout:
 
@@ -176,9 +180,9 @@ selection is driven by `Config::repo_kind`:
 `work_dir/path` and parses each with a streaming `serde_yaml::Deserializer`
 (one document at a time, so the full set is never held in memory at once).
 `serde_yaml` is used deliberately — despite being in maintenance mode it is the
-stable, streaming-capable parser the design requires (see
-[`design.md` 付録B](./design.md)); `manifest.rs` carries
-`#![allow(deprecated)]` on purpose.
+stable parser with the streaming `Deserializer` this needs; `serde_yml` lacks
+an equivalent streaming-from-string API. `manifest.rs` carries
+`#![allow(deprecated)]` on purpose, and `kube-rs` depends on `serde_yaml` too.
 
 Each document becomes a `RawManifest` if it has `apiVersion`, `kind`, and
 `metadata.name`; non-mapping, null, or incomplete documents are skipped (not
@@ -199,8 +203,8 @@ creating `metadata`/`labels` if absent.
 
 `kube_util` is the only module that talks to the Kubernetes API, and it never
 builds an informer or cache — every call is a direct `List`/`Get`/`Patch`/
-`Delete` on a `DynamicObject` that returns immediately (see
-[`design.md` §4](./design.md)).
+`Delete` on a `DynamicObject` that returns immediately. A cluster-wide cache
+would dominate RSS on large clusters, so it is avoided entirely.
 
 - **Discovery.** `resolve(group, version, kind)` calls
   `kube::discovery::pinned_kind(client, &gvk)`, which returns
@@ -225,7 +229,10 @@ and counted, but do not abort the pass.
 
 Drift detection runs only on **steady-state passes** (no force, prior state
 present, HEAD unchanged) — every other pass is a full apply. This is done with
-periodic `List` calls, never `Watch` (see [`design.md` §4](./design.md)).
+periodic `List` calls, never `Watch`: a `Watch` keeps a long-lived connection
+and a streaming cache, and leancd only ever compares the resources Git directly
+points at, so one `List` per managed GVK is enough and costs no resident memory
+between passes.
 
 `drift::detect`:
 
@@ -252,8 +259,7 @@ pass).
 ## 9. Pruning — two signals
 
 `prune::prune` deletes resources that leancd previously applied but that Git no
-longer declares. The deletion set combines two signals (see
-[`design.md` 付録B](./design.md)):
+longer declares. The deletion set combines two signals:
 
 1. **Primary** (`deletion_targets`): the persisted applied set (`prev`) minus
    the current Git set (`current`). This is a pure set difference — no API
@@ -263,8 +269,8 @@ longer declares. The deletion set combines two signals (see
    key was dropped from state.
 
 GVKs never applied before are out of scope (state-light): a fully-empty `prev`
-skips the safety net entirely — a deliberate trade-off documented in
-[`design.md` 付録B](./design.md).
+skips the safety net entirely — a deliberate trade-off favouring low RSS over
+exhaustive API discovery.
 
 Each candidate is resolved (discovery cached per GVK) and deleted with
 `DeleteParams::default()`. Delete failures are logged, not fatal.
@@ -276,8 +282,9 @@ server does not reliably populate `apiVersion`/`kind` on returned objects).
 
 ## 10. State model
 
-State lives in a single ConfigMap, not a CRD or database (see
-[`design.md` §4](./design.md)). The ConfigMap is named `<state-configmap>`
+State lives in a single ConfigMap, not a CRD or database — keeping both the
+persistent and in-process footprint minimal. The ConfigMap is named
+`<state-configmap>`
 (default `leancd-state`) in `<namespace>` (default `default`).
 
 `state::write` upserts the ConfigMap via SSA (under `field_manager`) and stamps
@@ -366,16 +373,25 @@ Mirroring the project non-goals ([`../README.md`](../README.md)):
 - No notifications, no web UI, no webhook receiver.
 - One process = one repository + one path.
 
-Implementation caveats (memory strategy, see [`design.md` §4](./design.md)):
+Implementation caveats (the memory strategy that keeps RSS ≤ 100MiB):
 
-- No `kube-rs` informer/cache; no `Watch`; no DB or global index.
+- No `kube-rs` informer/cache; no `Watch`; no DB or global index — each
+  interaction is a direct `List`/`Get`/`Patch`/`Delete`.
 - No persistent cache across passes — each reconcile is self-contained,
   re-discovering what it needs and discarding it.
+- No global or background caches; intermediate data is scoped to a single
+  reconcile and freed when it ends.
+- Git is a depth-1 shallow clone, so no history objects are ever held; only
+  the current working tree is parsed.
+- Manifests are parsed one document at a time (streaming), never loaded as a
+  whole.
+- The async runtime is single-threaded (`current_thread`) to avoid per-thread
+  stack memory.
+- Dependencies are kept minimal (rustls over OpenSSL, trimmed `features`),
+  gated by `cargo-deny`.
 
 ## 15. Cross-references
 
-- [`design.md`](./design.md) — design rationale (Japanese): goals, memory
-  strategy, technology selection, and 付録B implementation notes.
 - [`../README.md`](../README.md) — project overview and quick start.
 - [`./user-manual.md`](./user-manual.md) — complete flag/env/metric reference,
   tuning, and troubleshooting.

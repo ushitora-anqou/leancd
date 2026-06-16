@@ -1,14 +1,14 @@
 //! End-to-end tests for leancd.
 //!
 //! Each scenario drives leancd and Forgejo as in-cluster Pods on an ephemeral
-//! `kind` cluster and asserts the behaviour described in `doc/design.md`.
+//! `kind` cluster and asserts leancd's intended behaviour.
 //! Every test is `#[ignore]` because it needs Docker + kind; run them with
 //! `make e2e`
 //! (== `cargo test --test e2e -- --ignored --test-threads=1 --nocapture`).
 //!
 //! By default `cargo test` / `nextest` skip `#[ignore]` tests, so this file
 //! stays out of `nix flake check` (which runs in a sandbox without Docker) —
-//! the same status as `make bench` (design §8.4).
+//! the same status as `make bench`.
 
 mod common;
 

@@ -19,7 +19,7 @@ This directory verifies the headline guarantee: leancd keeps its RSS under
      via `ps`. Shared pages are double-counted, so this deliberately
      overestimates (a conservative regression gate).
 5. Fails if any of the self/tree peak/idle values >= the budget (default
-   100MiB). Design §8.2 requires every point to stay under the budget.
+   100MiB); every sampled point must stay under it.
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ Tunable via environment variables:
 
 ## Scale sweep
 
-To track how the footprint scales with the namespace count (design §8.3):
+To track how the footprint scales with the namespace count:
 
 ```sh
 make scale        # or: ./bench/scale.sh
@@ -59,8 +59,7 @@ These benchmarks need `kind`/Docker, so they are **not** part of
 `nix flake check` (which runs in a sandbox). `make test` covers the static gate
 (fmt/clippy/nextest/deny/audit) only. Run `make bench` / `make scale` manually
 or in an external CI job that has Docker — both scripts exit non-zero on a
-budget breach, so wiring them into such a job catches RSS regressions (design
-§8.4).
+budget breach, so wiring them into such a job catches RSS regressions.
 
 ## Measurement note
 
@@ -73,4 +72,4 @@ spawns (the `git` CLI for fetch/clone/reset, plus any `ssh` it shells out to).
 Because RSS double-counts pages shared between processes, the tree total is an
 overestimate — deliberately conservative. This verifies that git's memory is
 accounted for too, even though git runs as a separate process and is excluded
-from leancd's own `leancd_rss_bytes` (design §5.2/§8.2).
+from leancd's own `leancd_rss_bytes`.

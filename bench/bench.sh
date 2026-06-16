@@ -83,7 +83,7 @@ LEANC_PID=$!
 
 # Sample RSS from startup through the settled state. The maximum observed value
 # covers the sync peak (fetch/parse/apply); the last sample is the idle RSS.
-# Both must stay under the budget (design §8.2).
+# Both must stay under the budget.
 SAMPLE_SECS="${BENCH_SAMPLE_SECS:-30}"
 METRICS_URL="http://127.0.0.1:19090/metrics"
 

@@ -21,7 +21,9 @@ benchmark (see [bench/](bench/)).
 ## Non-goals (kept out to stay small and light)
 
 Kustomize / Helm / Jsonnet, owner-reference traversal, notifications, and a web
-UI. See [doc/design.md](doc/design.md) for the full design and rationale.
+UI — all deliberately omitted to stay small: Argo CD and Flux CD ship these but
+run at hundreds of MiB to GiB of RSS, and leancd trades them for the ≤100MiB
+budget.
 
 ## Build
 
@@ -79,8 +81,10 @@ leancd never builds an informer/cache of the cluster: every reconciliation
 issues direct `List`/`Get`/`Patch` calls for exactly the resources declared in
 Git. Git history is kept shallow (depth 1), YAML is parsed one document at a
 time, runtime state is a single ConfigMap plus a managed-by label, and the
-runtime is single-threaded (`tokio` `current_thread`). See
-[doc/design.md §4](doc/design.md) for the full memory strategy.
+runtime is single-threaded (`tokio` `current_thread`). There is no
+cluster-wide cache and no background state: each pass fetches only what it needs
+via direct `List`/`Get`/`Patch` calls and discards it, which keeps the footprint
+flat regardless of cluster size.
 
 ## Benchmark
 
@@ -105,8 +109,8 @@ make e2e        # kind cluster + in-cluster Forgejo + leancd
 
 The e2e suite spins up an ephemeral `kind` cluster and runs **Forgejo and
 leancd as in-cluster Pods** (leancd is built into a container image via the
-root [`Dockerfile`](Dockerfile) and loaded into the kind node). It drives the
-`doc/design.md` behaviour end-to-end across ~17 scenarios: initial apply, Git
+root [`Dockerfile`](Dockerfile) and loaded into the kind node). It drives
+leancd's intended behaviour end-to-end across ~17 scenarios: initial apply, Git
 change detection + steady-state drift-check, drift self-heal, prune, state
 ConfigMap, the `sync`/`status`/`--force` CLI, Prometheus metrics, cluster- and
 namespaced-scope resources, CRDs, the controller polling loop, HTTPS basic-auth
@@ -118,16 +122,17 @@ Run it manually or in an external CI job; a failing scenario exits non-zero so a
 regression fails the run. See [`tests/e2e.rs`](tests/e2e.rs) and
 [`tests/common/`](tests/common/).
 
-Concurrency and field-conflict behaviour ([design §3.4](doc/design.md)) are
-covered by unit tests and are deliberately out of e2e scope: scenarios drive
-`sync` serially and run a single controller at a time.
+Concurrency and field-conflict behaviour — `controller` (long-lived) and `sync`
+(manual, possibly in another Pod) may run at once, and server-side apply under a
+single field manager keeps that safe and idempotent — are covered by unit tests
+and are deliberately out of e2e scope: scenarios drive `sync` serially and run a
+single controller at a time.
 
 ## Documentation
 
 - [doc/user-manual.md](doc/user-manual.md) — complete feature reference
 - [doc/tutorial.md](doc/tutorial.md) — hands-on kind cluster walkthrough
 - [doc/architecture.md](doc/architecture.md) — how the implementation works
-- [doc/design.md](doc/design.md) — design rationale (Japanese)
 
 ## License
 

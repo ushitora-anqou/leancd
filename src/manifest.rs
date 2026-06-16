@@ -6,7 +6,7 @@
 //! to any resource kind, including CRDs.
 
 #![allow(deprecated)] // serde_yaml is maintenance-mode but is the stable,
-                      // streaming-capable YAML parser we depend on (see design.doc).
+                      // streaming-capable YAML parser we depend on.
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -89,7 +89,8 @@ fn value_to_manifest(value: Value) -> Result<Option<RawManifest>> {
 }
 
 /// Parse a YAML string that may contain multiple documents. A `kind: List`
-/// resource is expanded into its `items` (design §5.3).
+/// resource is expanded into its `items`, so a `List` behaves like separate
+/// documents.
 pub fn parse_str(yaml: &str) -> Result<Vec<RawManifest>> {
     let mut out = Vec::new();
     for doc in Deserializer::from_str(yaml) {

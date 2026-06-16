@@ -67,7 +67,7 @@ pub fn deletion_targets<'a>(
 }
 
 /// Delete resources that leancd previously applied but that Git no longer
-/// declares. The deletion set combines two signals (design 付録B):
+/// declares. The deletion set combines two signals:
 /// 1. The persisted applied set (`prev`) minus the current Git set — the
 ///    primary signal.
 /// 2. A managed-label safety net: for each GVK seen in `prev`, live resources

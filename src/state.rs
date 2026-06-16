@@ -78,7 +78,7 @@ fn build_state_configmap(cfg: &Config, state: &State) -> ConfigMap {
             // Deliberately no managed-by label: the prune safety-net lists live
             // resources by that label, so an unlabelled state ConfigMap is
             // invisible to prune and leancd will not delete its own state every
-            // pass. (design.md §5.5 / 付録B.)
+            // pass.
             ..Default::default()
         },
         data: Some(state.to_data()),
@@ -190,7 +190,7 @@ mod tests {
     fn state_configmap_carries_no_managed_label() {
         // The prune safety-net lists live resources by the managed-by label, so
         // the state ConfigMap must NOT carry it — otherwise leancd prunes its
-        // own state every pass. (design.md §5.5 / 付録B.)
+        // own state every pass.
         let cfg = Config {
             namespace: "default".into(),
             state_configmap: "leancd-state".into(),

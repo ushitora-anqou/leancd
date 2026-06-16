@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Track leancd RSS across increasing namespace scales (design §8.3).
+# Track leancd RSS across increasing namespace scales.
 #
 # Runs bench/bench.sh once per namespace count, collects the peak/idle RSS from
 # its machine-parseable summary line, and prints a table. Exits non-zero if any
