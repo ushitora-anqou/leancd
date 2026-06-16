@@ -7,8 +7,9 @@ This directory verifies the headline guarantee: leancd keeps its RSS under
 ## What it does
 
 1. Spins up a `kind` cluster (the simulated Kubernetes cluster).
-2. Generates a configurable set of manifests (ConfigMaps + cluster-scoped
-   resources) into a local Git repository.
+2. Generates a realistic manifest set (N namespaces ×
+   Deployment/StatefulSet/ConfigMap/Service + cluster-scoped resources) into a
+   local Git repository.
 3. Builds leancd in **release** mode and runs it as a controller pointed at the
    kind cluster via kubeconfig.
 4. Samples the `leancd_rss_bytes` Prometheus metric from startup through the
@@ -31,21 +32,21 @@ Tunable via environment variables:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BENCH_RESOURCE_COUNT` | 200 | number of manifests generated |
+| `BENCH_NAMESPACE_COUNT` | 15 | namespaces generated (×18 resources each) |
 | `RSS_BUDGET_MIB` | 100 | RSS budget in MiB |
 | `BENCH_SAMPLE_SECS` | 30 | seconds to sample RSS for peak detection |
 | `KIND_CLUSTER_NAME` | leancd-bench | kind cluster name |
 
 ## Scale sweep
 
-To track how the footprint scales with the managed resource count (design §8.3):
+To track how the footprint scales with the namespace count (design §8.3):
 
 ```sh
 make scale        # or: ./bench/scale.sh
 ```
 
-`scale.sh` runs `bench.sh` at each level (default `100 300 500`, via
-`SCALE_LEVELS`) and prints a table of peak/idle RSS. It exits non-zero if any
+`scale.sh` runs `bench.sh` at each level (default `8 15 20` namespaces, via
+`SCALE_NS_LEVELS`) and prints a table of peak/idle RSS. It exits non-zero if any
 level breaches the budget.
 
 ## CI integration

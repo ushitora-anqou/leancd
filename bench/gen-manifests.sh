@@ -1,34 +1,121 @@
 #!/usr/bin/env bash
-# Generate N Kubernetes manifests into a directory for RSS benchmarking.
-# Usage: gen-manifests.sh [COUNT] [OUT_DIR]
+# Generate a realistic, multi-namespace manifest set for RSS benchmarking.
+#
+# Mirrors a production cluster: N namespaces, each carrying a mix of
+# Deployments, StatefulSets, ConfigMaps, and Services. Workloads run real
+# (pause) Pods so the cluster state resembles a live environment while
+# leancd's reconciliation (apply/list/prune/drift) is exercised across many
+# GVKs and namespaces.
+#
+# Usage: gen-manifests.sh [NAMESPACE_COUNT] [OUT_DIR]
 set -euo pipefail
 
-COUNT="${1:-200}"
+NS_COUNT="${1:-15}"
 OUT="${2:-manifests}"
 mkdir -p "$OUT"
 
-# Mix of resource kinds to exercise discovery across groups/scope.
-for i in $(seq 1 "$COUNT"); do
-  cat > "$OUT/cm-$i.yaml" <<EOF
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: leancd-bench-cm-$i
-  namespace: default
-data:
-  index: "$i"
-  payload: "$(printf 'x%.0s' $(seq 1 200))"
-EOF
-done
+# Per-namespace workload composition (the "heavy" profile).
+DEP_PER_NS=5
+STS_PER_NS=2
+CM_PER_NS=8
+SVC_PER_NS=3
 
-# A couple of cluster-scoped resources to cover the Scope::Cluster path.
-cat > "$OUT/namespace.yaml" <<'EOF'
+# Reused ConfigMap payload (generated once, not per-resource).
+PAYLOAD="$(printf 'x%.0s' $(seq 1 200))"
+
+for n in $(seq 1 "$NS_COUNT"); do
+  ns="leancd-bench-ns-$n"
+
+  # Namespace itself (cluster-scoped).
+  cat > "$OUT/namespace-$n.yaml" <<EOF
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: leancd-bench
+  name: $ns
 EOF
 
+  # Deployments (real pause Pods).
+  for i in $(seq 1 "$DEP_PER_NS"); do
+    cat > "$OUT/deploy-${n}-${i}.yaml" <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-deploy-$i
+  namespace: $ns
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: app-deploy-$i
+  template:
+    metadata:
+      labels:
+        app: app-deploy-$i
+    spec:
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.9
+EOF
+  done
+
+  # StatefulSets (real pause Pods; serviceName is a required field).
+  for i in $(seq 1 "$STS_PER_NS"); do
+    cat > "$OUT/sts-${n}-${i}.yaml" <<EOF
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: app-sts-$i
+  namespace: $ns
+spec:
+  replicas: 2
+  serviceName: app-sts-$i
+  selector:
+    matchLabels:
+      app: app-sts-$i
+  template:
+    metadata:
+      labels:
+        app: app-sts-$i
+    spec:
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.9
+EOF
+  done
+
+  # ConfigMaps.
+  for i in $(seq 1 "$CM_PER_NS"); do
+    cat > "$OUT/cm-${n}-${i}.yaml" <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-cm-$i
+  namespace: $ns
+data:
+  index: "$i"
+  payload: "$PAYLOAD"
+EOF
+  done
+
+  # Services (ClusterIP, selecting the matching Deployment).
+  for i in $(seq 1 "$SVC_PER_NS"); do
+    cat > "$OUT/svc-${n}-${i}.yaml" <<EOF
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-svc-$i
+  namespace: $ns
+spec:
+  selector:
+    app: app-deploy-$i
+  ports:
+    - port: 80
+      targetPort: 80
+EOF
+  done
+done
+
+# A cluster-scoped resource to cover the Scope::Cluster path.
 cat > "$OUT/clusterrole.yaml" <<'EOF'
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -40,4 +127,6 @@ rules:
     verbs: ["get", "list"]
 EOF
 
-echo "generated $COUNT ConfigMaps (+2 cluster-scoped) into $OUT"
+per_ns=$(( DEP_PER_NS + STS_PER_NS + CM_PER_NS + SVC_PER_NS ))
+total=$(( NS_COUNT * per_ns ))
+echo "generated $NS_COUNT namespaces x $per_ns resources each ($total namespaced + $NS_COUNT Namespaces + ClusterRole) into $OUT"

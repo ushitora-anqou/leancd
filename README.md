@@ -86,12 +86,12 @@ runtime is single-threaded (`tokio` `current_thread`). See
 
 ```sh
 make bench        # or: ./bench/bench.sh   — single run
-make scale        # or: ./bench/scale.sh   — RSS across 100/300/500 resources
+make scale        # or: ./bench/scale.sh   — RSS across 8/15/20 namespaces
 ```
 
 `bench` samples RSS from startup through steady state and asserts both the sync
 **peak** and the **idle** value stay under 100MiB (tune with `RSS_BUDGET_MIB`,
-`BENCH_SAMPLE_SECS`). `scale` repeats the run at increasing manifest counts and
+`BENCH_SAMPLE_SECS`). `scale` repeats the run at increasing namespace counts and
 prints a peak/idle table. Both need a `kind` cluster and are **not** part of
 `nix flake check` (no Docker in the sandbox); run them manually or in an external
 CI job — the scripts exit non-zero on a budget breach, so a regression fails the

@@ -10,14 +10,14 @@
 # Prereqs: kind, kubectl, git, curl, cargo.
 #
 # Tunables:
-#   BENCH_RESOURCE_COUNT  number of manifests to generate (default 200)
+#   BENCH_NAMESPACE_COUNT  number of namespaces to generate (default 15)
 #   RSS_BUDGET_MIB        RSS budget in MiB (default 100)
 #   BENCH_SAMPLE_SECS     seconds to sample RSS for peak detection (default 30)
 #   KIND_CLUSTER_NAME     kind cluster name (default leancd-bench)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COUNT="${BENCH_RESOURCE_COUNT:-200}"
+NS_COUNT="${BENCH_NAMESPACE_COUNT:-15}"
 BUDGET_BYTES=$(( ${RSS_BUDGET_MIB:-100} * 1024 * 1024 ))
 CLUSTER="${KIND_CLUSTER_NAME:-leancd-bench}"
 WORK="$(mktemp -d)"
@@ -34,8 +34,8 @@ echo ">> creating kind cluster '$CLUSTER'"
 kind create cluster --name "$CLUSTER" >/dev/null
 # kind writes to ~/.kube/config; leancd's Client::try_default picks it up.
 
-echo ">> generating $COUNT manifests"
-"$ROOT/bench/gen-manifests.sh" "$COUNT" "$WORK/repo"
+echo ">> generating $NS_COUNT namespaces (x18 resources each)"
+"$ROOT/bench/gen-manifests.sh" "$NS_COUNT" "$WORK/repo"
 git -C "$WORK/repo" init -q -b main
 git -C "$WORK/repo" add -A
 git -C "$WORK/repo" -c user.email=bench@leancd -c user.name=bench commit -qm "benchmark manifests"
