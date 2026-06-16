@@ -12,10 +12,14 @@ This directory verifies the headline guarantee: leancd keeps its RSS under
    local Git repository.
 3. Builds leancd in **release** mode and runs it as a controller pointed at the
    kind cluster via kubeconfig.
-4. Samples the `leancd_rss_bytes` Prometheus metric from startup through the
-   settled state, capturing the **peak** (max) and **idle** (final) RSS.
-5. Fails if either value >= the budget (default 100MiB). Design §8.2 requires
-   both points to stay under the budget.
+4. Samples two footprints in parallel from startup through the settled state,
+   capturing the **peak** (max) and **idle** (final) value of each:
+   - **self** — leancd's own RSS, from the `leancd_rss_bytes` Prometheus metric.
+   - **tree** — the whole process tree (leancd + git/ssh subprocesses), summed
+     via `ps`. Shared pages are double-counted, so this deliberately
+     overestimates (a conservative regression gate).
+5. Fails if any of the self/tree peak/idle values >= the budget (default
+   100MiB). Design §8.2 requires every point to stay under the budget.
 
 ## Prerequisites
 
@@ -63,3 +67,10 @@ budget breach, so wiring them into such a job catches RSS regressions (design
 leancd runs as a host process against the kind cluster's kubeconfig rather than
 in-cluster. This exercises the exact same reconciliation code paths and memory
 profile; the in-cluster Deployment variant lives in `deploy/`.
+
+The **tree** measurement sums RSS across leancd and every descendant process it
+spawns (the `git` CLI for fetch/clone/reset, plus any `ssh` it shells out to).
+Because RSS double-counts pages shared between processes, the tree total is an
+overestimate — deliberately conservative. This verifies that git's memory is
+accounted for too, even though git runs as a separate process and is excluded
+from leancd's own `leancd_rss_bytes` (design §5.2/§8.2).

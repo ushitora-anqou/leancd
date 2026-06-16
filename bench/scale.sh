@@ -23,7 +23,7 @@ mib() { # bytes -> MiB (integer), or "-" when empty
   [ -n "$1" ] && echo $(( $1 / 1024 / 1024 )) || echo "-"
 }
 
-printf '%-11s %12s %12s %8s\n' "namespaces" "peak(MiB)" "idle(MiB)" "status"
+printf '%-11s %12s %12s %12s %12s %8s\n' "namespaces" "peak(MiB)" "idle(MiB)" "treepk(MiB)" "treeidl(MiB)" "status"
 overall=0
 for ns_count in $LEVELS; do
   out_file="$(mktemp)"
@@ -38,8 +38,10 @@ for ns_count in $LEVELS; do
   line="$(grep -m1 '^leancd-bench:' "$out_file" || true)"
   peak="$(printf '%s' "$line" | sed -n 's/.*peak=\([0-9]*\).*/\1/p')"
   idle="$(printf '%s' "$line" | sed -n 's/.*idle=\([0-9]*\).*/\1/p')"
+  tmax="$(printf '%s' "$line" | sed -n 's/.*treerss_max=\([0-9]*\).*/\1/p')"
+  tmin="$(printf '%s' "$line" | sed -n 's/.*treerss_min=\([0-9]*\).*/\1/p')"
 
-  printf '%-11s %12s %12s %8s\n' "$ns_count" "$(mib "$peak")" "$(mib "$idle")" "$status"
+  printf '%-11s %12s %12s %12s %12s %8s\n' "$ns_count" "$(mib "$peak")" "$(mib "$idle")" "$(mib "$tmax")" "$(mib "$tmin")" "$status"
   # Surface the failing run's output for debugging.
   [ "$status" = "FAIL" ] && cat "$out_file" >&2
   rm -f "$out_file"

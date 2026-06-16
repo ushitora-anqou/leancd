@@ -35,7 +35,7 @@ make test                      # == nix flake check : full CI (fmt, clippy -D wa
 
 The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provides the toolchain, plus `curl`, `kind`, `kubectl` in the dev shell. `make test` runs the complete CI gate (clippy denies warnings, `cargo-deny` allows permissive licenses only — MIT/Apache-2.0/BSD-3-Clause/BSL-1.0/ISC/Unicode-3.0; see `deny.toml`).
 
-**RSS benchmark** (`make bench` / `./bench/bench.sh`): spins up a `kind` cluster, generates N namespaces × Deployment/StatefulSet/ConfigMap/Service into a local Git repo, runs a release build of leancd against it, scrapes the `leancd_rss_bytes` Prometheus metric, and fails if RSS ≥ the budget. Tunables: `BENCH_NAMESPACE_COUNT` (default 15), `RSS_BUDGET_MIB` (default 100), `KIND_CLUSTER_NAME`.
+**RSS benchmark** (`make bench` / `./bench/bench.sh`): spins up a `kind` cluster, generates N namespaces × Deployment/StatefulSet/ConfigMap/Service into a local Git repo, runs a release build of leancd against it, and samples two footprints in parallel: the **self** RSS (`leancd_rss_bytes` metric) and the **tree** RSS (leancd + git/ssh subprocesses, summed via `ps` — shared pages double-counted, so deliberately conservative). It fails if any of the self/tree peak/idle RSS ≥ the budget. Tunables: `BENCH_NAMESPACE_COUNT` (default 15), `RSS_BUDGET_MIB` (default 100), `BENCH_SAMPLE_SECS` (default 30), `KIND_CLUSTER_NAME`.
 
 ## Architecture
 
