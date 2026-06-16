@@ -13,7 +13,12 @@ RUN mkdir src && echo 'fn main() {}' > src/main.rs \
 
 # Build the real binary on top of the cached dependency layer.
 COPY src/ ./src/
-RUN cargo build --release
+# Force the leancd crate to rebuild after copying the real sources. BuildKit
+# preserves the host's (possibly older) mtimes on the copied files, which can
+# make Cargo's mtime-based fingerprint skip recompiling leancd and ship the
+# throwaway `fn main(){}` dummy from the dependency-cache step above. `touch`
+# bumps the mtimes so the real binary is always compiled.
+RUN touch src/*.rs && cargo build --release
 
 # Runtime: a minimal image with the tooling leancd shells out to. Per design
 # 付録B the base image must include `git` (git_sync runs git as a separate

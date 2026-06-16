@@ -104,7 +104,7 @@ pub async fn prune(
         .collect();
     for gvk in &prev_gvks {
         let (group, version, kind) = gvk;
-        let (ar, caps) = match discovery.get(gvk) {
+        let (ar, _caps) = match discovery.get(gvk) {
             Some(c) => c.clone(),
             None => match kube_util::resolve(client, group, version, kind).await {
                 Ok(c) => {
@@ -121,16 +121,9 @@ pub async fn prune(
                 }
             },
         };
-        let live = match kube_util::list(
-            client,
-            &ar,
-            &caps.scope,
-            None,
-            &cfg.namespace,
-            Some(&label_sel),
-        )
-        .await
-        {
+        // List across ALL namespaces (BUG 5): a resource leancd applied in a
+        // namespace other than cfg.namespace must still be pruned when it leaves Git.
+        let live = match kube_util::list_all(client, &ar, Some(&label_sel)).await {
             Ok(l) => l,
             Err(e) => {
                 tracing::warn!(

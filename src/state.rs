@@ -69,27 +69,28 @@ fn api(client: &kube::client::Client, cfg: &Config) -> Api<ConfigMap> {
     Api::namespaced(client.clone(), &cfg.namespace)
 }
 
-/// Persist `state` into the configured ConfigMap (server-side apply upsert).
-pub async fn write(client: &kube::client::Client, cfg: &Config, state: &State) -> Result<()> {
-    let cms = api(client, cfg);
-    let cm = ConfigMap {
+/// Build the ConfigMap leancd persists its sync state into.
+fn build_state_configmap(cfg: &Config, state: &State) -> ConfigMap {
+    ConfigMap {
         metadata: ObjectMeta {
             name: Some(cfg.state_configmap.clone()),
             namespace: Some(cfg.namespace.clone()),
-            labels: Some(
-                [(
-                    cfg.managed_label_key.clone(),
-                    cfg.managed_label_value.clone(),
-                )]
-                .into_iter()
-                .collect(),
-            ),
+            // Deliberately no managed-by label: the prune safety-net lists live
+            // resources by that label, so an unlabelled state ConfigMap is
+            // invisible to prune and leancd will not delete its own state every
+            // pass. (design.md §5.5 / 付録B.)
             ..Default::default()
         },
         data: Some(state.to_data()),
         binary_data: None,
         immutable: None,
-    };
+    }
+}
+
+/// Persist `state` into the configured ConfigMap (server-side apply upsert).
+pub async fn write(client: &kube::client::Client, cfg: &Config, state: &State) -> Result<()> {
+    let cms = api(client, cfg);
+    let cm = build_state_configmap(cfg, state);
     let pp = PatchParams::apply(&cfg.field_manager);
     cms.patch(&cfg.state_configmap, &pp, &Patch::Apply(&cm))
         .await?;
@@ -183,5 +184,31 @@ mod tests {
         data.insert("applied".into(), "not-json".into());
         let s = State::from_data(Some(&data));
         assert!(s.applied.is_empty());
+    }
+
+    #[test]
+    fn state_configmap_carries_no_managed_label() {
+        // The prune safety-net lists live resources by the managed-by label, so
+        // the state ConfigMap must NOT carry it — otherwise leancd prunes its
+        // own state every pass. (design.md §5.5 / 付録B.)
+        let cfg = Config {
+            namespace: "default".into(),
+            state_configmap: "leancd-state".into(),
+            managed_label_key: "app.kubernetes.io/managed-by".into(),
+            managed_label_value: "leancd".into(),
+            field_manager: "leancd".into(),
+            ..Default::default()
+        };
+        let cm = build_state_configmap(&cfg, &State::default());
+        let has_label = cm
+            .metadata
+            .labels
+            .as_ref()
+            .map(|m| m.contains_key(&cfg.managed_label_key))
+            .unwrap_or(false);
+        assert!(
+            !has_label,
+            "state ConfigMap must not carry the managed-by label"
+        );
     }
 }

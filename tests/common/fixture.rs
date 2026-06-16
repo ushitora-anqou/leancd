@@ -36,6 +36,21 @@ impl Fixture {
         run(&["kind", "create", "cluster", "--name", CLUSTER_NAME]);
         // Build the leancd image and load it into the kind node.
         run(&["docker", "build", "-t", "leancd:latest", "."]);
+        // Sanity: the image is the real binary, not the throwaway `fn main(){}`
+        // dummy that BuildKit + Cargo's mtime fingerprint can ship (BUG 1).
+        let version = run(&[
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "leancd",
+            "leancd:latest",
+            "--version",
+        ]);
+        assert!(
+            version.trim().starts_with("leancd"),
+            "built image is not the real leancd binary (got: {version})",
+        );
         run(&[
             "kind",
             "load",

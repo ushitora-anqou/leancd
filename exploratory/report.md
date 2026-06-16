@@ -30,15 +30,15 @@ Push **ConfigMap cm-a**, **Deployment demo**, **Service demo** to Git (empty rep
 **[after] leancd state** (ConfigMap `app/leancd-state`):
 ```yaml
     drift_count: "0"
-    last_sha: 2738d7f52156e600c81c44371f664b40adc8662e
+    last_sha: 4abb07f7bcb66ce7a78d0250e7c00313b2176b0f
     managed_count: "3"
     sync_count: "3"
 ```
 **[after] leancd recent log**:
 ```
-  2026-06-15T12:09:03.067292Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("extra-ns"), name: "cm-extra" }
-  2026-06-15T12:09:03.069372Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "apiextensions.k8s.io", version: "v1", kind: "CustomResourceDefinition", namespace: None, name: "widgets.example.com" }
-  2026-06-15T12:09:03.071837Z  INFO leancd::reconcile: reconciliation complete sha=2738d7f52156e600c81c44371f664b40adc8662e force=false full=true managed=3 pruned=10 drift=0
+  2026-06-16T00:10:23.942051Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "example.com", version: "v1", kind: "Widget", namespace: Some("app"), name: "w1" }
+  2026-06-16T00:10:23.943962Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("extra-ns"), name: "cm-extra" }
+  2026-06-16T00:10:23.945425Z  INFO leancd::reconcile: reconciliation complete sha=4abb07f7bcb66ce7a78d0250e7c00313b2176b0f force=false full=true managed=3 pruned=9 drift=0
 ```
 **[after] Argo CD app**:
 ```
@@ -56,16 +56,16 @@ Add a new **ConfigMap cm-b**; existing resources unchanged.
 
 **[after] leancd state** (ConfigMap `app/leancd-state`):
 ```yaml
-    drift_count: "0"
-    last_sha: 9c9c9ebe19ba33aa9a30457fc07a1cc9b86db484
+    drift_count: "2"
+    last_sha: 23b9a511c4588b09ce3b2b7fbfbe8545a8fa5aaf
     managed_count: "4"
     sync_count: "5"
 ```
 **[after] leancd recent log**:
 ```
-  2026-06-15T12:09:33.373051Z  INFO leancd::reconcile: reconciliation complete sha=2738d7f52156e600c81c44371f664b40adc8662e force=false full=false managed=3 pruned=1 drift=3
-  2026-06-15T12:10:03.670029Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "leancd-state" }
-  2026-06-15T12:10:03.671777Z  INFO leancd::reconcile: reconciliation complete sha=9c9c9ebe19ba33aa9a30457fc07a1cc9b86db484 force=false full=true managed=4 pruned=1 drift=0
+  2026-06-16T00:11:24.503830Z  WARN leancd::reconcile: drift detected key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "cm-b" } reason=spec differs from desired state
+  2026-06-16T00:11:24.503832Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=2
+  2026-06-16T00:11:24.514240Z  INFO leancd::reconcile: reconciliation complete sha=23b9a511c4588b09ce3b2b7fbfbe8545a8fa5aaf force=false full=false managed=4 pruned=0 drift=2
 ```
 **[after] Argo CD app**:
 ```
@@ -83,16 +83,16 @@ Update **cm-a** `data.version` from "1" to "2".
 
 **[after] leancd state** (ConfigMap `app/leancd-state`):
 ```yaml
-    drift_count: "4"
-    last_sha: a672e251ad33fe040d1690562e5708edb35b8bbb
+    drift_count: "0"
+    last_sha: dda7a1a73a4366684f0762cf874d4fd8cf0fe9e8
     managed_count: "4"
-    sync_count: "7"
+    sync_count: "6"
 ```
 **[after] leancd recent log**:
 ```
-  2026-06-15T12:11:04.211761Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=4
-  2026-06-15T12:11:04.222631Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "leancd-state" }
-  2026-06-15T12:11:04.224793Z  INFO leancd::reconcile: reconciliation complete sha=a672e251ad33fe040d1690562e5708edb35b8bbb force=false full=false managed=4 pruned=1 drift=4
+  2026-06-16T00:11:24.503832Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=2
+  2026-06-16T00:11:24.514240Z  INFO leancd::reconcile: reconciliation complete sha=23b9a511c4588b09ce3b2b7fbfbe8545a8fa5aaf force=false full=false managed=4 pruned=0 drift=2
+  2026-06-16T00:11:54.816835Z  INFO leancd::reconcile: reconciliation complete sha=dda7a1a73a4366684f0762cf874d4fd8cf0fe9e8 force=false full=true managed=4 pruned=0 drift=0
 ```
 **[after] Argo CD app**:
 ```
@@ -108,16 +108,16 @@ Remove **cm-b** from Git; both controllers should prune it.
 
 **[after] leancd state** (ConfigMap `app/leancd-state`):
 ```yaml
-    drift_count: "0"
-    last_sha: 054a3b12937c07c333413283a4095b5190a191ca
+    drift_count: "1"
+    last_sha: bc7b4abcfa4e4ebdb2373ea6359b25fa4d9b0d3c
     managed_count: "3"
     sync_count: "8"
 ```
 **[after] leancd recent log**:
 ```
-  2026-06-15T12:11:34.496110Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "leancd-state" }
-  2026-06-15T12:11:34.497535Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "cm-b" }
-  2026-06-15T12:11:34.499521Z  INFO leancd::reconcile: reconciliation complete sha=054a3b12937c07c333413283a4095b5190a191ca force=false full=true managed=3 pruned=2 drift=0
+  2026-06-16T00:12:55.367644Z  WARN leancd::reconcile: drift detected key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "cm-a" } reason=spec differs from desired state
+  2026-06-16T00:12:55.367657Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=1
+  2026-06-16T00:12:55.377900Z  INFO leancd::reconcile: reconciliation complete sha=bc7b4abcfa4e4ebdb2373ea6359b25fa4d9b0d3c force=false full=false managed=3 pruned=0 drift=1
 ```
 **[after] Argo CD app**:
 ```
@@ -137,16 +137,16 @@ Delete **Deployment demo** live in each cluster. Both should recreate it.
 
 **[after] leancd state** (ConfigMap `app/leancd-state`):
 ```yaml
-    drift_count: "3"
-    last_sha: 054a3b12937c07c333413283a4095b5190a191ca
+    drift_count: "2"
+    last_sha: bc7b4abcfa4e4ebdb2373ea6359b25fa4d9b0d3c
     managed_count: "3"
-    sync_count: "10"
+    sync_count: "9"
 ```
 **[after] leancd recent log**:
 ```
-  2026-06-15T12:12:35.158116Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=3
-  2026-06-15T12:12:35.168785Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "leancd-state" }
-  2026-06-15T12:12:35.170305Z  INFO leancd::reconcile: reconciliation complete sha=054a3b12937c07c333413283a4095b5190a191ca force=false full=false managed=3 pruned=1 drift=3
+  2026-06-16T00:13:25.648500Z  WARN leancd::reconcile: drift detected key=ResourceKey { group: "apps", version: "v1", kind: "Deployment", namespace: Some("app"), name: "demo" } reason=missing in cluster
+  2026-06-16T00:13:25.648502Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=2
+  2026-06-16T00:13:25.721791Z  INFO leancd::reconcile: reconciliation complete sha=bc7b4abcfa4e4ebdb2373ea6359b25fa4d9b0d3c force=false full=false managed=3 pruned=0 drift=2
 ```
 **[after] Argo CD app**:
 ```
@@ -164,16 +164,16 @@ Push a CRD (widgets.example.com) and a Widget CR (w1). Both controllers must dis
 
 **[after] leancd state** (ConfigMap `app/leancd-state`):
 ```yaml
-    drift_count: "4"
-    last_sha: ef0f3238e78ed2702b485aee81aa8275a62e2ee4
+    drift_count: "2"
+    last_sha: f5ec60d03ec949d5caaa58cf0971bcc04859e6c5
     managed_count: "5"
-    sync_count: "12"
+    sync_count: "11"
 ```
 **[after] leancd recent log**:
 ```
-  2026-06-15T12:13:35.752504Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=4
-  2026-06-15T12:13:35.856536Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "leancd-state" }
-  2026-06-15T12:13:35.858334Z  INFO leancd::reconcile: reconciliation complete sha=ef0f3238e78ed2702b485aee81aa8275a62e2ee4 force=false full=false managed=5 pruned=1 drift=4
+  2026-06-16T00:14:26.273690Z  WARN leancd::reconcile: drift detected key=ResourceKey { group: "example.com", version: "v1", kind: "Widget", namespace: Some("app"), name: "w1" } reason=missing in cluster
+  2026-06-16T00:14:26.273693Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=2
+  2026-06-16T00:14:26.376617Z  INFO leancd::reconcile: reconciliation complete sha=f5ec60d03ec949d5caaa58cf0971bcc04859e6c5 force=false full=false managed=5 pruned=0 drift=2
 ```
 **[after] Argo CD app**:
 ```
@@ -191,16 +191,16 @@ Push a Namespace (extra-ns), a ConfigMap in extra-ns (cm-extra — a namespace *
 
 **[after] leancd state** (ConfigMap `app/leancd-state`):
 ```yaml
-    drift_count: "6"
-    last_sha: 5c96eb841fac6582c79d2fa96047f590c7597ac6
+    drift_count: "4"
+    last_sha: 0e627862c8337d0a21fb95b781929d0dc51cffeb
     managed_count: "8"
-    sync_count: "14"
+    sync_count: "13"
 ```
 **[after] leancd recent log**:
 ```
-  2026-06-15T12:14:36.438524Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=6
-  2026-06-15T12:14:36.462261Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "leancd-state" }
-  2026-06-15T12:14:36.465043Z  INFO leancd::reconcile: reconciliation complete sha=5c96eb841fac6582c79d2fa96047f590c7597ac6 force=false full=false managed=8 pruned=1 drift=6
+  2026-06-16T00:15:26.949254Z  WARN leancd::reconcile: drift detected key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("extra-ns"), name: "cm-extra" } reason=spec differs from desired state
+  2026-06-16T00:15:26.949256Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=4
+  2026-06-16T00:15:26.969873Z  INFO leancd::reconcile: reconciliation complete sha=0e627862c8337d0a21fb95b781929d0dc51cffeb force=false full=false managed=8 pruned=0 drift=4
 ```
 **[after] Argo CD app**:
 ```
@@ -219,16 +219,16 @@ Push a file with two YAML documents (multi-a, multi-b) and a kind:List with two 
 
 **[after] leancd state** (ConfigMap `app/leancd-state`):
 ```yaml
-    drift_count: "10"
-    last_sha: aa87dacc253cbddb088dbdad26b97e1440e564e6
+    drift_count: "8"
+    last_sha: 059315e207c91e1ae8ed07de9bef181ea9d05ccc
     managed_count: "12"
-    sync_count: "16"
+    sync_count: "15"
 ```
 **[after] leancd recent log**:
 ```
-  2026-06-15T12:15:37.046379Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=10
-  2026-06-15T12:15:37.070460Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "leancd-state" }
-  2026-06-15T12:15:37.072518Z  INFO leancd::reconcile: reconciliation complete sha=aa87dacc253cbddb088dbdad26b97e1440e564e6 force=false full=false managed=12 pruned=1 drift=10
+  2026-06-16T00:16:27.532128Z  WARN leancd::reconcile: drift detected key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("extra-ns"), name: "cm-extra" } reason=spec differs from desired state
+  2026-06-16T00:16:27.532130Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=8
+  2026-06-16T00:16:27.559582Z  INFO leancd::reconcile: reconciliation complete sha=059315e207c91e1ae8ed07de9bef181ea9d05ccc force=false full=false managed=12 pruned=0 drift=8
 ```
 **[after] Argo CD app**:
 ```
@@ -247,16 +247,16 @@ Live-mutate cm-a in each cluster (version 2→99, add `mutated-by: kubectl`). Bo
 
 **[after] leancd state** (ConfigMap `app/leancd-state`):
 ```yaml
-    drift_count: "10"
-    last_sha: aa87dacc253cbddb088dbdad26b97e1440e564e6
+    drift_count: "8"
+    last_sha: 059315e207c91e1ae8ed07de9bef181ea9d05ccc
     managed_count: "12"
     sync_count: "17"
 ```
 **[after] leancd recent log**:
 ```
-  2026-06-15T12:16:07.362604Z  WARN leancd::reconcile: apply pass completed with failures applied=11 failed=1
-  2026-06-15T12:16:07.371048Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "leancd-state" }
-  2026-06-15T12:16:07.372769Z  INFO leancd::reconcile: reconciliation complete sha=aa87dacc253cbddb088dbdad26b97e1440e564e6 force=false full=false managed=12 pruned=1 drift=10
+  2026-06-16T00:17:28.220289Z  WARN leancd::reconcile: drift detected key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("extra-ns"), name: "cm-extra" } reason=spec differs from desired state
+  2026-06-16T00:17:28.220291Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=8
+  2026-06-16T00:17:28.244928Z  INFO leancd::reconcile: reconciliation complete sha=059315e207c91e1ae8ed07de9bef181ea9d05ccc force=false full=false managed=12 pruned=0 drift=8
 ```
 **[after] Argo CD app**:
 ```
@@ -264,11 +264,7 @@ Live-mutate cm-a in each cluster (version 2→99, add `mutated-by: kubectl`). Bo
   compare   Synced        Healthy
 ```
 **Self-heal comparison**:
-  [~] DIFF: app/configmap/cm-a
-      6c6
-      <     "version": "99"
-      ---
-      >     "version": "2"
+  [=] MATCH: app/configmap/cm-a
 
 ## Scenario 7 — SSA field-manager conflict
 
@@ -276,16 +272,16 @@ Apply cm-a with a competing field manager (`conflict-manager`, version=7, taken-
 
 **[after] leancd state** (ConfigMap `app/leancd-state`):
 ```yaml
-    drift_count: "10"
-    last_sha: aa87dacc253cbddb088dbdad26b97e1440e564e6
+    drift_count: "8"
+    last_sha: 059315e207c91e1ae8ed07de9bef181ea9d05ccc
     managed_count: "12"
-    sync_count: "19"
+    sync_count: "18"
 ```
 **[after] leancd recent log**:
 ```
-  2026-06-15T12:17:07.963397Z  WARN leancd::reconcile: apply pass completed with failures applied=11 failed=1
-  2026-06-15T12:17:07.972345Z  INFO leancd::prune: pruned resource no longer in Git key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("app"), name: "leancd-state" }
-  2026-06-15T12:17:07.974345Z  INFO leancd::reconcile: reconciliation complete sha=aa87dacc253cbddb088dbdad26b97e1440e564e6 force=false full=false managed=12 pruned=1 drift=10
+  2026-06-16T00:17:58.516844Z  WARN leancd::reconcile: drift detected key=ResourceKey { group: "", version: "v1", kind: "ConfigMap", namespace: Some("extra-ns"), name: "cm-extra" } reason=spec differs from desired state
+  2026-06-16T00:17:58.516846Z  INFO leancd::reconcile: drift detected; re-applying managed resources drift=8
+  2026-06-16T00:17:58.543545Z  INFO leancd::reconcile: reconciliation complete sha=059315e207c91e1ae8ed07de9bef181ea9d05ccc force=false full=false managed=12 pruned=0 drift=8
 ```
 **[after] Argo CD app**:
 ```
@@ -293,71 +289,5 @@ Apply cm-a with a competing field manager (`conflict-manager`, version=7, taken-
   compare   Synced        Healthy
 ```
 **Conflict comparison**:
-  [~] DIFF: app/configmap/cm-a
-      6c6
-      <     "version": "99"
-      ---
-      >     "version": "2"
+  [=] MATCH: app/configmap/cm-a
   (if DIFF on data.version/taken-by → that controller did NOT reclaim the conflicting field)
-
----
-
-## Summary
-
-### Final-state comparison (the agreed primary check)
-
-| # | Scenario | Result |
-|---|----------|--------|
-| 1 | initial apply (ConfigMap + Deployment + Service) | ✅ MATCH (3/3) |
-| 2 | add ConfigMap cm-b | ✅ MATCH |
-| 3 | update cm-a data (version 1→2) | ✅ MATCH |
-| 4 | delete cm-b (prune) | ✅ both pruned; survivors MATCH |
-| 6 | delete Deployment demo live (self-heal re-create) | ✅ both recreated; MATCH |
-| 8 | CRD + custom resource | ✅ MATCH (CRD + Widget) |
-| 9 | cluster-scoped + other-namespace | ✅ MATCH |
-| 10 | multi-document YAML + kind:List | ✅ MATCH (4/4) |
-| 5 | live spec mutation (drift self-heal) | ❌ DIFF — leancd stuck at 99, Argo CD healed to 2 |
-| 7 | SSA field-manager conflict | ❌ DIFF — leancd cannot reclaim the field, Argo CD can |
-
-For the **core GitOps lifecycle** — add / update / delete (prune) / CRD /
-cluster-scoped resources / multi-document YAML / kind:List — leancd and Argo CD
-converge to the **same final state**. leancd diverges only where a **conflicting
-SSA field manager** is involved (scenarios 5 and 7): it cannot self-heal the
-field, Argo CD can.
-
-### leancd bugs found (full detail in `notes/bugs.md`)
-
-1. **Dockerfile ships a dummy binary** — BuildKit + Cargo's mtime fingerprint
-   skip the real build, so the image contains `fn main(){}`; CrashLoopBackOff
-   with exit 0. *(High — blocks startup.)*
-2. **leancd prunes its own state ConfigMap** every reconciliation — the
-   safety-net lists the labelled `leancd-state` and deletes it each pass, then
-   rewrites it; constant churn and a state-loss risk. *(Medium.)*
-3. **drift false-positive on arrays** — `spec_subset` falls through to strict
-   array equality, so server-injected defaults (container `resources`,
-   `imagePullPolicy`, `terminationMessage*`, `ports[].protocol`, …) make every
-   pass report drift → perpetual re-apply, never a steady state. *(High — the
-   drift fast-path never short-circuits.)*
-4. **controller cannot self-heal a field taken by another field manager** — the
-   controller runs `force=false`, so `kubectl edit/patch` that claims a field
-   blocks leancd from converging on that resource; the apply 409s forever. Argo
-   CD (ServerSideApply + selfHeal) reclaims it. *(High — scenarios 5 & 7.)*
-5. **drift/prune are scoped to a single namespace** — `drift::detect` and the
-   prune safety-net issue their `List` calls against `LEANCD_NAMESPACE` only
-   (`kube_util::api_for` with `namespace=None` ⇒ default namespace). A resource
-   leancd *applied* in another namespace is never drift-checked or pruned by
-   leancd. Argo CD manages resources across namespaces. *(Medium — surfaced by
-   code reading; scenario 9 only does an apply so it did not show up as a
-   divergence there.)*
-
-### Observed differences that are NOT bugs (design)
-
-- **Detection timing**: leancd polls (every 30s in this run); Argo CD watches.
-  Per the agreed criteria this is a design difference, not a bug.
-- **Idle load**: because of BUG 3, leancd re-applies every managed resource on
-  every poll, generating noticeably more kube-API traffic and log volume than
-  Argo CD, which sits idle once `Synced`.
-- **Health**: in scenario 8 Argo CD reported the Application `Degraded` (no
-  health check is registered for the custom `Widget` CRD); the resource itself
-  still matched between clusters. leancd has no health concept, so this is an
-  Argo-CD-only signal, not a leancd divergence.

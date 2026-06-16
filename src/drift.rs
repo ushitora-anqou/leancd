@@ -40,23 +40,16 @@ pub async fn detect(
     let mut live_by_gvk: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
 
     for (group, version, kind) in gvks.into_keys() {
-        let (ar, caps) = match kube_util::resolve(client, &group, &version, &kind).await {
+        let (ar, _caps) = match kube_util::resolve(client, &group, &version, &kind).await {
             Ok(x) => x,
             Err(e) => {
                 tracing::warn!(error = %e, gvk = ?(&group, &version, &kind), "drift: discovery failed");
                 continue;
             }
         };
-        let live = match kube_util::list(
-            client,
-            &ar,
-            &caps.scope,
-            None,
-            &cfg.namespace,
-            Some(&label_sel),
-        )
-        .await
-        {
+        // List across ALL namespaces (BUG 5): a resource leancd applied in a
+        // namespace other than cfg.namespace must still be drift-checked.
+        let live = match kube_util::list_all(client, &ar, Some(&label_sel)).await {
             Ok(l) => l,
             Err(e) => {
                 tracing::warn!(error = %e, gvk = ?(&group, &version, &kind), "drift: list failed");
@@ -88,7 +81,16 @@ pub fn compute_drifts(
                 reason: "missing in cluster".to_string(),
             }),
             Some(lo) => {
-                if specs_differ(&m.data, &lo.data) {
+                // Compare the Git manifest against the *whole* live object
+                // (re-serialized, so apiVersion/kind from `types` and metadata
+                // are present). `DynamicObject.data` is `#[serde(flatten)]` and
+                // holds only the fields left after apiVersion/kind/metadata are
+                // peeled off into `types`/`metadata`, so comparing `m.data`
+                // (which carries apiVersion/kind) against `lo.data` alone makes
+                // every spec-less resource (ConfigMap, Namespace, …) report
+                // drift forever.
+                let live_value = serde_json::to_value(lo).unwrap_or(serde_json::Value::Null);
+                if specs_differ(&m.data, &live_value) {
                     drifts.push(DriftItem {
                         key: ResourceKey::from_manifest(m),
                         reason: "spec differs from desired state".to_string(),
@@ -112,7 +114,14 @@ pub fn find_live_match<'a>(
 }
 
 /// True when the live object does not satisfy the Git-declared fields.
+///
+/// `apiVersion`/`kind` are stripped from both sides before comparing: the Git
+/// manifest carries them, but the live `DynamicObject`'s `types` (where kube-rs
+/// parks them) is often `None` on `List`, so they are an unreliable comparison
+/// key and would make every spec-less resource drift forever.
 pub fn specs_differ(git: &Value, live: &Value) -> bool {
+    let git = strip_type_fields(git);
+    let live = strip_type_fields(live);
     let git_spec = git.get("spec");
     let live_spec = live.get("spec");
     match (git_spec, live_spec) {
@@ -120,8 +129,19 @@ pub fn specs_differ(git: &Value, live: &Value) -> bool {
         (Some(_), None) => true,
         // No spec to compare on the Git side: fall back to whole-object subset
         // so label/annotation drift on spec-less resources is still caught.
-        (None, _) => !spec_subset(git, live),
+        (None, _) => !spec_subset(&git, &live),
     }
+}
+
+/// Return a copy of `v` with `apiVersion` and `kind` removed (top level only).
+fn strip_type_fields(v: &Value) -> Value {
+    let mut obj = match v.as_object() {
+        Some(o) => o.clone(),
+        None => return v.clone(),
+    };
+    obj.remove("apiVersion");
+    obj.remove("kind");
+    Value::Object(obj)
 }
 
 /// Recursive subset check: `git` is satisfied by `live` when every key in `git`
@@ -132,6 +152,13 @@ fn spec_subset(git: &Value, live: &Value) -> bool {
         (Value::Object(g), Value::Object(l)) => g
             .iter()
             .all(|(k, v)| l.get(k).is_some_and(|lv| spec_subset(v, lv))),
+        // Arrays: index-aligned recursive subset. leancd applies the array
+        // itself via SSA, so live preserves Git's element order; extra trailing
+        // live elements (server-injected defaults) are tolerated, and each Git
+        // element must be a subset of the live element at the same index.
+        (Value::Array(g), Value::Array(l)) => {
+            g.len() <= l.len() && g.iter().enumerate().all(|(i, gv)| spec_subset(gv, &l[i]))
+        }
         _ => git == live,
     }
 }
@@ -162,6 +189,39 @@ mod tests {
         assert!(!spec_subset(&git, &live));
     }
 
+    // --- arrays: a Git element that is a subset of the live element (server
+    //     injects resources/imagePullPolicy/ports[].protocol/…) must NOT drift. ---
+
+    #[test]
+    fn subset_allows_server_defaults_in_array_elements() {
+        let git = json!({"containers": [{"name": "a", "image": "x"}]});
+        let live = json!({"containers": [{"name": "a", "image": "x", "resources": {}, "imagePullPolicy": "IfNotPresent"}]});
+        assert!(spec_subset(&git, &live));
+    }
+
+    #[test]
+    fn subset_detects_missing_array_element() {
+        // Fewer live elements than Git declares → drift.
+        let git = json!({"containers": [{"name": "a"}, {"name": "b"}]});
+        let live = json!({"containers": [{"name": "a"}]});
+        assert!(!spec_subset(&git, &live));
+    }
+
+    #[test]
+    fn subset_detects_value_change_in_array_element() {
+        let git = json!({"containers": [{"name": "a", "image": "x"}]});
+        let live = json!({"containers": [{"name": "a", "image": "y"}]});
+        assert!(!spec_subset(&git, &live));
+    }
+
+    #[test]
+    fn subset_allows_extra_trailing_live_array_elements() {
+        // Extra trailing live elements are tolerated (server may append).
+        let git = json!({"init": [{"name": "a"}]});
+        let live = json!({"init": [{"name": "a"}, {"name": "b"}]});
+        assert!(spec_subset(&git, &live));
+    }
+
     #[test]
     fn specs_differ_when_live_lacks_spec() {
         let git = json!({"spec": {"port": 80}});
@@ -185,7 +245,13 @@ mod tests {
         namespace: Option<&str>,
         spec: Value,
     ) -> RawManifest {
+        let api_version = if group.is_empty() {
+            "v1".to_string()
+        } else {
+            format!("{group}/v1")
+        };
         let mut data = json!({
+            "apiVersion": api_version,
             "kind": kind,
             "metadata": { "name": name },
             "spec": spec,
@@ -205,6 +271,8 @@ mod tests {
 
     fn dyn_obj(name: &str, namespace: Option<&str>, spec: Value) -> DynamicObject {
         let mut v = json!({
+            "apiVersion": "v1",
+            "kind": "TestKind",
             "metadata": { "name": name },
             "spec": spec,
         });
@@ -329,5 +397,25 @@ mod tests {
         let drifts = compute_drifts(&[m1, m2], &live);
         assert_eq!(drifts.len(), 1);
         assert_eq!(drifts[0].key.kind, "Deployment");
+    }
+
+    #[test]
+    fn compute_drifts_distinguishes_namespaces() {
+        // Same kind+name in two namespaces; live must be matched per-namespace
+        // so only the drifted namespace is reported. This guards BUG 5: detect()
+        // must list across all namespaces so both objects reach compute_drifts.
+        let m_a = test_manifest("", "ConfigMap", "c", Some("ns1"), json!({"v": 1}));
+        let m_b = test_manifest("", "ConfigMap", "c", Some("ns2"), json!({"v": 1}));
+        let mut live: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
+        live.insert(
+            ("".into(), "v1".into(), "ConfigMap".into()),
+            vec![
+                dyn_obj("c", Some("ns1"), json!({"v": 1})),
+                dyn_obj("c", Some("ns2"), json!({"v": 2})),
+            ],
+        );
+        let drifts = compute_drifts(&[m_a, m_b], &live);
+        assert_eq!(drifts.len(), 1, "only ns2 should differ");
+        assert_eq!(drifts[0].key.namespace.as_deref(), Some("ns2"));
     }
 }

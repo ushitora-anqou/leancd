@@ -91,7 +91,11 @@ impl Reconciler {
                     drift = drifts.len(),
                     "drift detected; re-applying managed resources"
                 );
-                self.apply_all(&manifests, force).await?;
+                // BUG 4: force-apply on drift-triggered self-heal so a field
+                // claimed by another SSA field manager (e.g. `kubectl
+                // edit/patch`) is reclaimed back to Git. The controller's
+                // top-level `force` (false) still governs the initial full apply.
+                self.apply_all(&manifests, true).await?;
             }
         }
         let drift_count = drifts.len();

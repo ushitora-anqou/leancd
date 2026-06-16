@@ -74,16 +74,18 @@ pub async fn apply(
     Ok(patched)
 }
 
-/// List live resources of a kind, optionally filtered by a label selector.
-pub async fn list(
+/// List live resources of a kind across **all** namespaces (namespaced
+/// resources) or cluster-wide (cluster-scoped resources), optionally filtered by
+/// a label selector. Used by drift detection and prune so that resources leancd
+/// applied in *any* namespace are visible — not only those in
+/// `default_namespace`. (`Api::all_with` lists namespaced kinds across every
+/// namespace.)
+pub async fn list_all(
     client: &Client,
     ar: &ApiResource,
-    scope: &Scope,
-    namespace: Option<&str>,
-    default_namespace: &str,
     label_selector: Option<&str>,
 ) -> Result<Vec<DynamicObject>> {
-    let api = api_for(client, ar, scope, namespace, default_namespace);
+    let api = Api::all_with(client.clone(), ar);
     let mut lp = ListParams::default();
     if let Some(sel) = label_selector {
         lp = lp.labels(sel);

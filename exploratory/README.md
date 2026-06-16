@@ -14,11 +14,6 @@ match Argo CD's outcome is recorded as a leancd bug.
   shared repo, syncing repo root into namespace `app` with Server-Side Apply.
 - `manifests/` — leancd Deployment/RBAC/Secret, Argo CD AppProject/Application +
   repository Secret. `__FORGEJO_GIT_URL__` is substituted at deploy time.
-- `Dockerfile.build` — builds leancd **inside** the container. This exists
-  because the project's production `Dockerfile` has a build-reproducibility bug
-  (see `notes/bugs.md` BUG 1) that shipped a `fn main(){}` dummy binary, and
-  because the NixOS-host-built binary's dynamic linker is missing in
-  `debian:bookworm-slim`.
 - `lib/common.sh` — shared constants, `kc_lean`/`kc_argo` wrappers, `wait_for`.
 - `lib/git.sh` — host-side git push/clone against Forgejo + `wait_sync`
   (converges both controllers onto a repo HEAD).
@@ -31,7 +26,7 @@ match Argo CD's outcome is recorded as a leancd bug.
 ## Running
 ```sh
 ./setup.sh
-docker build -t leancd:latest -f exploratory/Dockerfile.build .
+docker build -t leancd:latest .
 kind load docker-image leancd:latest --name leancd-compare
 ./deploy-leancd.sh
 ./deploy-argocd.sh
