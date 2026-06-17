@@ -70,6 +70,45 @@ All applies use Kubernetes server-side apply under a field manager (default
 leancd coexist with other managers; `--force` makes SSA claim ownership of
 conflicting fields.
 
+### Helm hooks
+
+leancd honours Helm hook annotations in **pre-rendered** manifests (i.e. YAML
+already produced by `helm template` or equivalent — leancd does not render
+charts). The semantics match Argo CD:
+
+- `helm.sh/hook: pre-install` / `pre-upgrade` run **before** the main apply;
+  `post-install` / `post-upgrade` run **after** it (install and upgrade are
+  indistinguishable in a single reconcile, so they collapse).
+- `helm.sh/hook: pre-delete` / `post-delete` run on a **full teardown** — when
+  every main resource has left Git while leancd still has an applied set. The
+  order is pre-delete → prune all → post-delete.
+- `helm.sh/hook-weight` orders hooks within a phase (ascending; ties by name;
+  default `0`).
+- `helm.sh/hook-delete-policy` controls hook deletion (`before-hook-creation`
+  [default], `hook-succeeded`, `hook-failed`); multiple comma-separated values
+  are honoured.
+- `helm.sh/resource-policy: keep` exempts a resource from pruning entirely.
+
+Job (`batch/Job`) and Pod hooks are **awaited to completion** within
+`--hook-timeout-secs` (default 300s): a hook reaching `Complete`/`Succeeded` is
+treated as success, `Failed` as failure, and a timeout as failure. Other kinds
+are considered complete — and successful — on apply: leancd never observes
+failure for them, so `hook-failed` never fires, while `hook-succeeded` always
+does (and `before-hook-creation`, the default, applies to every kind). A failed
+PreSync (or pre-delete) hook aborts
+the pass before the main apply; a failed PostSync hook leaves the already-applied
+main resources in place and records the error in the state ConfigMap.
+
+A resource whose `helm.sh/hook` lists **only unsupported types** (e.g. `test`,
+`rollback`, `crd-install`) is ignored — it is neither applied nor pruned.
+
+Removing a hook from Git does **not** delete its already-applied instance. Hooks
+are deliberately excluded from the prune set — a hook's lifetime is governed by
+`helm.sh/hook-delete-policy`, not Git membership — so a retired hook stays in the
+cluster unless its delete policy already removed it on the final run that still
+declared it (e.g. `hook-succeeded` after a successful run), or until it is
+deleted manually. This mirrors Argo CD.
+
 ## 3. Installation
 
 There is no published binary or image yet; build from source.
@@ -176,6 +215,7 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 | `--managed-label-key` | — | `app.kubernetes.io/managed-by` | all | managed-by label key |
 | `--managed-label-value` | — | `leancd` | all | managed-by label value |
 | `--field-manager` | — | `leancd` | all | SSA field manager name |
+| `--hook-timeout-secs` | `LEANCD_HOOK_TIMEOUT_SECS` | `300` | all | per-hook (Job/Pod) completion timeout before it is treated as failed (see [Helm hooks](#helm-hooks)) |
 | `--force` | — | `false` | `sync` only | force-conflict server-side apply |
 
 `--poll-interval` and `--git-*-env` are accepted by all subcommands (they are
@@ -308,6 +348,7 @@ text-format output).
 |---|---|---|---|
 | `leancd_sync_total` | counter | — | Number of reconciliation passes |
 | `leancd_sync_errors_total` | counter | — | Number of failed reconciliations |
+| `leancd_hooks_total` | counter | `phase`, `result` | Helm hooks executed (`phase` ∈ presync/postsync/predelete/postdelete; `result` ∈ succeeded/failed) |
 | `leancd_sync_last_success_timestamp_seconds` | observable gauge | — | Unix timestamp of the last successful sync |
 | `leancd_drift_detected` | observable gauge | `group`, `version`, `kind` | Drifted resources, broken down by GVK (reset each pass) |
 | `leancd_managed_resources` | observable gauge | — | Number of resources managed by leancd |

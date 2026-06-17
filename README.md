@@ -14,16 +14,22 @@ benchmark (see [bench/](bench/)).
 - Detects Git changes by polling (`git fetch`, shallow clone).
 - Detects cluster-side drift and re-applies the desired state.
 - Prunes resources removed from Git.
+- Honours **Helm hooks** in pre-rendered manifests with Argo CD-equivalent
+  semantics (`pre-install`/`pre-upgrade` → before the apply, `post-install`/
+  `post-upgrade` → after; `pre-delete`/`post-delete` on full teardown), plus
+  `helm.sh/hook-weight`, `helm.sh/hook-delete-policy`, and
+  `helm.sh/resource-policy: keep`. Job/Pod hooks are awaited to completion.
 - CLI for manual sync (`--force` to claim conflicting fields) and status.
 - Metrics exported over OTLP/HTTP (push), including `leancd_rss_bytes`.
 - Handles **all** resource kinds, including CRDs and cluster-scoped resources.
 
 ## Non-goals (kept out to stay small and light)
 
-Kustomize / Helm / Jsonnet, owner-reference traversal, notifications, and a web
-UI — all deliberately omitted to stay small: Argo CD and Flux CD ship these but
-run at hundreds of MiB to GiB of RSS, and leancd trades them for the ≤100MiB
-budget.
+Kustomize / Helm-chart *rendering* / Jsonnet, owner-reference traversal,
+notifications, and a web UI — all deliberately omitted to stay small: Argo CD and
+Flux CD ship these but run at hundreds of MiB to GiB of RSS, and leancd trades
+them for the ≤100MiB budget. (Helm *hooks* in already-rendered YAML are
+supported; chart templating is not.)
 
 ## Build
 
@@ -54,6 +60,7 @@ Key flags:
 | `--branch` | `LEANCD_BRANCH` | main | branch to track |
 | `--path` | `LEANCD_PATH` | . | glob patterns of manifest directories (recursive; repeatable; comma-separated via env, e.g. `live/*/prod`) |
 | `--poll-interval` | `LEANCD_POLL_INTERVAL` | 60s | reconciliation interval |
+| `--hook-timeout-secs` | `LEANCD_HOOK_TIMEOUT_SECS` | 300 | per-hook (Job/Pod) completion timeout before it is treated as failed |
 | `--namespace` | `LEANCD_NAMESPACE` | default | leancd's namespace |
 
 For the complete flag and environment-variable reference, authentication modes,
@@ -110,11 +117,13 @@ make e2e        # kind cluster + in-cluster Forgejo + leancd
 The e2e suite spins up an ephemeral `kind` cluster and runs **Forgejo and
 leancd as in-cluster Pods** (leancd is built into a container image via the
 root [`Dockerfile`](Dockerfile) and loaded into the kind node). It drives
-leancd's intended behaviour end-to-end across ~17 scenarios: initial apply, Git
+leancd's intended behaviour end-to-end across ~26 scenarios: initial apply, Git
 change detection + steady-state drift-check, drift self-heal, prune, state
 ConfigMap, the `sync`/`status`/`--force` CLI, OTLP metrics, cluster- and
 namespaced-scope resources, CRDs, the controller polling loop, HTTPS basic-auth
-and SSH-key Git access, and error recovery.
+and SSH-key Git access, error recovery, and **Helm hooks** — PreSync/PostSync
+Job/Pod execution and completion, hook weights, `hook-delete-policy`,
+pre/post-delete teardown, and `resource-policy: keep`.
 
 Every scenario is `#[ignore]`d (needs Docker + kind), so the suite stays out of
 `nix flake check` (no Docker in the sandbox) — the same status as `make bench`.

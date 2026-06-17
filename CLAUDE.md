@@ -49,9 +49,9 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 1. Read prior state from the state ConfigMap (`state.rs`) — previous HEAD SHA + previously-applied resource keys.
 2. `git_sync::sync` — shallow `fetch`/`clone` (`--depth 1`), compare HEAD SHA → `changed` bool. Short-circuits heavy work when nothing moved.
 3. `manifest::parse_dir` — streaming, per-document YAML parse into untyped `RawManifest`s; inject the managed-by label into each.
-4. **Full apply** when `force || first run || sha changed`; otherwise **drift-check** (`drift::detect`) and re-apply only if drift is found.
-5. `prune::prune` — delete keys in the prior applied set that are absent from the current Git set.
-6. Write updated state (new SHA, applied keys, counts) back to the ConfigMap; update OTel instruments.
+4. **Full apply** when `force || first run || sha changed`; otherwise **drift-check** (`drift::detect`) and re-apply only if drift is found. `hooks::classify` splits manifests into phases; on a full apply the order is **PreSync hooks → `apply_all`(main) → PostSync hooks** (Job/Pod hooks are awaited to completion; a failed PreSync hook aborts the pass). A **full teardown** (main set empty, prior applied set non-empty) runs **pre-delete → prune all → post-delete**.
+5. `prune::prune` — delete keys in the prior applied set that are absent from the current Git set. Live objects with `helm.sh/resource-policy: keep` or `helm.sh/hook` are kept (hooks are managed by `hooks.rs`, not the prune set-diff).
+6. Write updated state (new SHA, applied **main** keys, counts) back to the ConfigMap; update OTel instruments.
 
 ### Memory strategy — do not violate these
 
@@ -69,10 +69,11 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 | `cli.rs` | clap subcommands + shared `CommonArgs` (flags map to `LEANCD_*` env vars) → `Config` |
 | `config.rs` | validated `Config`; git-credential resolution from env; URL encoding |
 | `git_sync.rs` | shallow fetch/clone + HEAD-SHA change detection via the `git` CLI |
-| `manifest.rs` | streaming multi-doc YAML parse; GVK/ns/name extraction; managed-label injection |
-| `kube_util.rs` | API discovery (`pinned_kind`), dynamic `Api` construction (cluster vs namespaced), SSA `apply`, `list`, `delete` |
+| `manifest.rs` | streaming multi-doc YAML parse; GVK/ns/name extraction; managed-label injection; annotation read helper |
+| `kube_util.rs` | API discovery (`pinned_kind`), dynamic `Api` construction (cluster vs namespaced), SSA `apply`, `list`, `get`, `delete` |
+| `hooks.rs` | Helm-hook classification + execution: Argo CD-equivalent phase mapping (pre/post-install-upgrade, pre/post-delete), `hook-weight` ordering, `hook-delete-policy`, Job/Pod completion wait |
 | `reconcile.rs` | the `Reconciler` engine shared by `controller`/`sync` |
-| `prune.rs` | set-diff deletion of resources removed from Git (`ResourceKey` identity) |
+| `prune.rs` | set-diff deletion of resources removed from Git (`ResourceKey` identity); keeps `resource-policy: keep` and Helm-hook resources |
 | `drift.rs` | per-GVK `List` + subset comparison |
 | `state.rs` | single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
 | `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics via `PeriodicReader`; exposes `leancd_rss_bytes`. No HTTP listener. |

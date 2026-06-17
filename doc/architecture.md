@@ -44,7 +44,7 @@ and minimal dependencies.
 
 ## 2. Module map
 
-`src/` contains eleven modules. `reconcile` is the hub; `kube_util` is the only
+`src/` contains twelve modules. `reconcile` is the hub; `kube_util` is the only
 boundary that touches the Kubernetes API; `main` wires the runtime.
 
 | Module | Responsibility |
@@ -53,14 +53,15 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | `cli.rs` | `clap` subcommands (`controller`, `sync`, `status`) and shared `CommonArgs` → `Config` |
 | `config.rs` | Validated `Config`; Git-transport classification; credential resolution; duration parser |
 | `git_sync.rs` | Shallow `fetch`/`clone` and HEAD-SHA change detection via the `git` CLI |
-| `manifest.rs` | Streaming multi-document YAML parse; GVK/ns/name extraction; `kind: List` expansion; managed-label injection |
-| `kube_util.rs` | API discovery (`pinned_kind`), dynamic `Api` construction (cluster vs namespaced), SSA `apply`, `list`, `delete` |
+| `manifest.rs` | Streaming multi-document YAML parse; GVK/ns/name extraction; `kind: List` expansion; managed-label injection; annotation read helper |
+| `kube_util.rs` | API discovery (`pinned_kind`), dynamic `Api` construction (cluster vs namespaced), SSA `apply`, `list`, `get`, `delete` |
+| `hooks.rs` | Helm-hook classification + execution (Argo CD-equivalent phases, weights, delete-policy, Job/Pod completion wait) |
 | `reconcile.rs` | The `Reconciler` engine shared by `controller` and `sync` |
 | `drift.rs` | Per-GVK `List` + subset comparison for drift detection |
-| `prune.rs` | Two-signal deletion of resources removed from Git |
+| `prune.rs` | Two-signal deletion of resources removed from Git; honours `resource-policy: keep` and Helm hooks |
 | `state.rs` | Single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
 | `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics; exposes `leancd_rss_bytes`. No HTTP listener. |
-| `error.rs` | `thiserror` `Error` enum (`Git`, `Manifest`, `Kube`, `Config`, `Io`, `Other`) and `Result` alias |
+| `error.rs` | `thiserror` `Error` enum (`Git`, `Manifest`, `Kube`, `Config`, `Hook`, `Io`, `Other`) and `Result` alias |
 
 ## 3. The single binary and its three subcommands
 
@@ -119,12 +120,22 @@ provider and flushes it on exit; `status` instruments nothing.
    takes the drift-check branch instead.
 
 6. **Apply or drift-check.**
-   - Full-apply path: `apply_all` applies every manifest via server-side apply.
-   - Drift-check path: `drift::detect` lists live managed resources and compares
-     them; if any drift is found, `apply_all` is called to re-apply.
+   - Full-apply path: hooks and main resources are split by `hooks::classify`.
+     `pre-install`/`pre-upgrade` hooks run (`hooks::run_phase`, PreSync) — awaited
+     to completion for Job/Pod — then `apply_all` applies the **main** (non-hook)
+     manifests, then `post-install`/`post-upgrade` hooks run (PostSync). A failed
+     PreSync hook aborts the pass before the main apply.
+   - Drift-check path: `drift::detect` lists live managed resources (main set
+     only) and compares them; if any drift is found, the PreSync → main → PostSync
+     sequence runs as above.
+   - **Full teardown** (the main set is empty but a prior applied set exists):
+     `pre-delete` hooks run, all previously-applied resources are pruned, then
+     `post-delete` hooks run. An emptied repo/path is treated as teardown rather
+     than a fatal "would prune everything" (only fatal when nothing was applied).
 7. **Prune.** `prune::prune` deletes resources present in the prior applied set
    (and, as a safety net, live managed-by resources) that are absent from the
-   current Git set.
+   current Git set. A live object carrying `helm.sh/resource-policy: keep` or
+   `helm.sh/hook` is kept (hook resources are managed by the hook engine).
 8. **Persist state.** A new `State` (new SHA, applied keys, counts, drift
    count, timestamp) is written back to the ConfigMap via SSA.
 9. **Update metrics.** `managed_resources`, `drift_detected{group,version,kind}`
@@ -326,6 +337,7 @@ footprint at collection time.
 |---|---|---|---|
 | `leancd_sync_total` | counter | — | every `run_once` |
 | `leancd_sync_errors_total` | counter | — | failed reconcile |
+| `leancd_hooks_total` | counter | `phase`, `result` | per phase executed (presync/postsync/predelete/postdelete × succeeded/failed) |
 | `leancd_sync_last_success_timestamp_seconds` | observable gauge | — | on success |
 | `leancd_drift_detected` | observable gauge | `group`, `version`, `kind` | reset each pass, then set per GVK |
 | `leancd_managed_resources` | observable gauge | — | each pass |
