@@ -670,3 +670,453 @@ async fn git_unreachable_records_error() {
     assert!(err.is_some(), "last_error should be recorded");
     assert!(!err.unwrap().is_empty(), "last_error should be non-empty");
 }
+
+// --- Helm Hook scenarios (helm.sh/hook) ---
+//
+// Hooks run in phases around the main apply (PreSync → main → PostSync, or
+// PreDelete → prune → PostDelete on a full teardown). A hook is a resource
+// carrying a `helm.sh/hook` annotation; leancd classifies it, orders it by
+// `helm.sh/hook-weight`, applies it, awaits Job/Pod completion, and deletes it
+// per `helm.sh/hook-delete-policy`. Hooks never enter the applied set, so they
+// are not pruned. The hook container is the `leancd:latest` image (loaded into
+// the kind node) running `/bin/sh -c`, so a hook's effect is observable only
+// via its own status and the presence/absence of resources.
+
+/// Scenario 18 (hook A): a PreSync Job hook runs before the main apply. Both
+/// the hook Job and the main ConfigMap remain (default `before-hook-creation`
+/// only deletes a prior instance on the *next* run; with no delete policy the
+/// hook is kept after it succeeds). The Job's `.status.succeeded` proves it was
+/// awaited to completion, not merely applied.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn presync_job_runs_before_main() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-presync");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "pre.yaml".into(),
+                manifests::job_hook(
+                    "hh-a-job",
+                    "default",
+                    "pre-install",
+                    None,
+                    None,
+                    "echo pre-sync; exit 0",
+                ),
+            ),
+            (
+                "cm.yaml".into(),
+                manifests::configmap("hh-a-cm", "default", &[("k", "v")]),
+            ),
+        ],
+    );
+    let res = common::leancd::sync(&env.sync_args(&fj.https_url(&env.repo)));
+    assert!(res.success, "sync failed: {}", res.stderr);
+    assert!(common::kubectl::exists("default", "job", "hh-a-job"));
+    assert!(common::kubectl::exists("default", "configmap", "hh-a-cm"));
+
+    let job = common::kubectl::get_json("default", "job", "hh-a-job");
+    assert_eq!(
+        job["status"]["succeeded"].as_i64(),
+        Some(1),
+        "pre-sync hook Job should complete: {:?}",
+        job["status"]
+    );
+}
+
+/// Scenario 19 (hook B): a failing PreSync hook aborts the pass — the main
+/// resource is never applied, sync exits non-zero, and the failure is recorded
+/// in the state ConfigMap's `last_error`.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn presync_failure_aborts_main() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-presync-fail");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "pre.yaml".into(),
+                manifests::job_hook("hh-b-job", "default", "pre-install", None, None, "exit 1"),
+            ),
+            (
+                "cm.yaml".into(),
+                manifests::configmap("hh-b-cm", "default", &[("k", "v")]),
+            ),
+        ],
+    );
+    let res = common::leancd::sync(&env.sync_args(&fj.https_url(&env.repo)));
+    assert!(!res.success, "sync should fail when a pre-sync hook fails");
+    assert!(
+        !common::kubectl::exists("default", "configmap", "hh-b-cm"),
+        "main resource must not be applied when pre-sync hook fails"
+    );
+
+    let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
+    let err = st["data"]["last_error"]
+        .as_str()
+        .expect("last_error should be recorded");
+    assert!(
+        err.contains("pre-sync hook failed"),
+        "last_error should mention the pre-sync hook failure: {err}"
+    );
+}
+
+/// Scenario 20 (hook C): a PreSync hook with `hook-delete-policy: hook-succeeded`
+/// is deleted by leancd once it completes successfully, while the main resource
+/// is applied and kept.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn hook_succeeded_deletes_hook() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-del");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "pre.yaml".into(),
+                manifests::job_hook(
+                    "hh-c-job",
+                    "default",
+                    "pre-install",
+                    None,
+                    Some("hook-succeeded"),
+                    "echo pre-sync; exit 0",
+                ),
+            ),
+            (
+                "cm.yaml".into(),
+                manifests::configmap("hh-c-cm", "default", &[("k", "v")]),
+            ),
+        ],
+    );
+    let res = common::leancd::sync(&env.sync_args(&fj.https_url(&env.repo)));
+    assert!(res.success, "sync failed: {}", res.stderr);
+    let gone = common::wait::wait_for(
+        || !common::kubectl::exists("default", "job", "hh-c-job"),
+        Duration::from_secs(15),
+        Duration::from_millis(500),
+    );
+    assert!(
+        gone,
+        "hook-succeeded Job should be deleted after completion"
+    );
+    assert!(common::kubectl::exists("default", "configmap", "hh-c-cm"));
+}
+
+/// Scenario 21 (hook D): a hook is excluded from the applied set (only the
+/// ConfigMap is listed), and after the hook is removed from Git it is NOT
+/// pruned — it was never in the applied set, so it is neither a primary-diff
+/// target nor a safety-net candidate.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn hook_not_in_applied_set() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-applied");
+    fj.create_repo(&env.repo, false);
+    let clone = common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "pre.yaml".into(),
+                manifests::job_hook(
+                    "hh-d-job",
+                    "default",
+                    "pre-install",
+                    None,
+                    None,
+                    "echo pre-sync; exit 0",
+                ),
+            ),
+            (
+                "cm.yaml".into(),
+                manifests::configmap("hh-d-cm", "default", &[("k", "v")]),
+            ),
+        ],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    assert!(common::leancd::sync(&args).success);
+
+    let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
+    let applied = st["data"]["applied"]
+        .as_str()
+        .expect("applied set present in state");
+    assert!(
+        applied.contains("hh-d-cm"),
+        "applied set must list the ConfigMap: {applied}"
+    );
+    assert!(
+        !applied.contains("hh-d-job"),
+        "applied set must NOT list the hook Job: {applied}"
+    );
+
+    // Remove the hook from Git; it must survive prune.
+    common::git::remove_and_push(&clone, fj, &env.repo, &["pre.yaml".to_string()]);
+    assert!(common::leancd::sync(&args).success);
+
+    assert!(
+        common::kubectl::exists("default", "job", "hh-d-job"),
+        "hook Job must survive prune (never in the applied set)"
+    );
+    assert!(
+        common::kubectl::exists("default", "configmap", "hh-d-cm"),
+        "ConfigMap still declared in Git must remain"
+    );
+}
+
+/// Scenario 22 (hook E): a main resource carrying
+/// `helm.sh/resource-policy: keep` is not pruned when it leaves Git (teardown
+/// runs prune, but `keep` exempts the resource from deletion).
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn resource_policy_keep_survives_prune() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-keep");
+    fj.create_repo(&env.repo, false);
+    let clone = common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "cm.yaml".into(),
+            manifests::configmap_keep("hh-e-cm", "default", &[("k", "v")]),
+        )],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    assert!(common::leancd::sync(&args).success);
+    assert!(common::kubectl::exists("default", "configmap", "hh-e-cm"));
+
+    common::git::remove_and_push(&clone, fj, &env.repo, &["cm.yaml".to_string()]);
+    assert!(common::leancd::sync(&args).success);
+
+    assert!(
+        common::kubectl::exists("default", "configmap", "hh-e-cm"),
+        "resource-policy=keep ConfigMap must survive prune"
+    );
+}
+
+/// Scenario 23 (hook F): a PostSync Job hook runs after the main apply; both
+/// the main ConfigMap and the hook Job remain, and the Job completed.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn postsync_hook_after_main() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-postsync");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "cm.yaml".into(),
+                manifests::configmap("hh-f-cm", "default", &[("k", "v")]),
+            ),
+            (
+                "post.yaml".into(),
+                manifests::job_hook(
+                    "hh-f-job",
+                    "default",
+                    "post-install",
+                    None,
+                    None,
+                    "echo post-sync; exit 0",
+                ),
+            ),
+        ],
+    );
+    let res = common::leancd::sync(&env.sync_args(&fj.https_url(&env.repo)));
+    assert!(res.success, "sync failed: {}", res.stderr);
+    assert!(common::kubectl::exists("default", "configmap", "hh-f-cm"));
+    assert!(common::kubectl::exists("default", "job", "hh-f-job"));
+
+    let job = common::kubectl::get_json("default", "job", "hh-f-job");
+    assert_eq!(
+        job["status"]["succeeded"].as_i64(),
+        Some(1),
+        "post-sync hook Job should complete: {:?}",
+        job["status"]
+    );
+}
+
+/// Scenario 24 (hook G): a PreSync Pod hook (not a Job) is awaited to its
+/// terminal `phase`; leancd waits for `phase=Succeeded` before applying main.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn pod_hook_completion() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-pod");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "pre.yaml".into(),
+                manifests::pod_hook(
+                    "hh-g-pod",
+                    "default",
+                    "pre-install",
+                    None,
+                    None,
+                    "echo pre-sync; exit 0",
+                ),
+            ),
+            (
+                "cm.yaml".into(),
+                manifests::configmap("hh-g-cm", "default", &[("k", "v")]),
+            ),
+        ],
+    );
+    let res = common::leancd::sync(&env.sync_args(&fj.https_url(&env.repo)));
+    assert!(res.success, "sync failed: {}", res.stderr);
+    assert!(common::kubectl::exists("default", "configmap", "hh-g-cm"));
+
+    let pod = common::kubectl::get_json("default", "pod", "hh-g-pod");
+    assert_eq!(
+        pod["status"]["phase"].as_str(),
+        Some("Succeeded"),
+        "pre-sync Pod hook should reach phase=Succeeded: {:?}",
+        pod["status"]
+    );
+}
+
+/// Scenario 25 (hook H): removing the last main resource from Git (keeping a
+/// pre-delete hook) triggers a full teardown. The pre-delete hook runs (it does
+/// NOT run on a normal sync), then the main ConfigMap is pruned.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn teardown_with_pre_delete() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-teardown");
+    fj.create_repo(&env.repo, false);
+    let clone = common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "cm.yaml".into(),
+                manifests::configmap("hh-h-cm", "default", &[("k", "v")]),
+            ),
+            (
+                "pre.yaml".into(),
+                manifests::job_hook(
+                    "hh-h-pre",
+                    "default",
+                    "pre-delete",
+                    None,
+                    None,
+                    "echo pre-delete; exit 0",
+                ),
+            ),
+        ],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    assert!(common::leancd::sync(&args).success);
+    assert!(common::kubectl::exists("default", "configmap", "hh-h-cm"));
+    assert!(
+        !common::kubectl::exists("default", "job", "hh-h-pre"),
+        "pre-delete hook must not run on a normal (non-teardown) sync"
+    );
+
+    // Remove the main resource, keep the pre-delete hook → full teardown.
+    common::git::remove_and_push(&clone, fj, &env.repo, &["cm.yaml".to_string()]);
+    assert!(common::leancd::sync(&args).success);
+
+    assert!(
+        common::wait::wait_for(
+            || !common::kubectl::exists("default", "configmap", "hh-h-cm"),
+            Duration::from_secs(15),
+            Duration::from_millis(500),
+        ),
+        "main ConfigMap must be pruned during teardown"
+    );
+    assert!(
+        common::kubectl::exists("default", "job", "hh-h-pre"),
+        "pre-delete hook Job should be applied during teardown"
+    );
+    let job = common::kubectl::get_json("default", "job", "hh-h-pre");
+    assert_eq!(
+        job["status"]["succeeded"].as_i64(),
+        Some(1),
+        "pre-delete hook should complete during teardown: {:?}",
+        job["status"]
+    );
+}
+
+/// Scenario 26 (hook I): within a phase, hooks run in ascending `hook-weight`.
+/// The lower-weight hook (-5) runs first and fails, so the higher-weight hook
+/// (+5) never runs. Both hooks use the default delete policy (kept after the
+/// run), so the higher-weight hook's absence proves it was skipped.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn weight_ordering_aborts_early() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-weight");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "low.yaml".into(),
+                manifests::job_hook(
+                    "hh-i-low",
+                    "default",
+                    "pre-install",
+                    Some(-5),
+                    None,
+                    "exit 1",
+                ),
+            ),
+            (
+                "high.yaml".into(),
+                manifests::job_hook(
+                    "hh-i-high",
+                    "default",
+                    "pre-install",
+                    Some(5),
+                    None,
+                    "echo high; exit 0",
+                ),
+            ),
+        ],
+    );
+    let res = common::leancd::sync(&env.sync_args(&fj.https_url(&env.repo)));
+    assert!(
+        !res.success,
+        "sync should fail when the first-weight hook fails"
+    );
+    assert!(
+        common::kubectl::exists("default", "job", "hh-i-low"),
+        "lower-weight hook should have been applied"
+    );
+    assert!(
+        !common::kubectl::exists("default", "job", "hh-i-high"),
+        "higher-weight hook must not run after the lower-weight hook fails"
+    );
+
+    let low = common::kubectl::get_json("default", "job", "hh-i-low");
+    assert_eq!(
+        low["status"]["failed"].as_i64(),
+        Some(1),
+        "lower-weight hook should have failed: {:?}",
+        low["status"]
+    );
+}
