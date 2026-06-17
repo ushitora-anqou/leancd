@@ -72,7 +72,7 @@ pub fn delete(ns: &str, kind: &str, name: &str) {
 }
 
 /// `kubectl apply --server-side --field-manager <fm> -f -` (used to seed a
-/// conflicting field owner for the force scenario).
+/// competing field manager that leancd must reclaim).
 pub fn apply_ssa(manifest: &str, field_manager: &str) {
     let mut child = Command::new("kubectl")
         .args([

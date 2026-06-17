@@ -71,7 +71,7 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | Subcommand | Behaviour | Entry |
 |---|---|---|
 | `controller` | Long-lived: initialises the OTel meter provider, then runs `run_loop()` until shutdown | `run_controller` |
-| `sync [--force]` | One reconciliation pass (`run_once(force)`), then exits | `run_sync` |
+| `sync` | One reconciliation pass (`run_once()`), then exits | `run_sync` |
 | `status` | Reads the state ConfigMap and prints it, then exits (no reconciliation) | `run_status` |
 
 Because manual and automatic sync share `run_once`, the apply logic is
@@ -107,17 +107,16 @@ provider and flushes it on exit; `status` instruments nothing.
    `metadata.labels`.
 5. **Decide full-apply vs drift-check** via `should_full_apply`:
 
-   | `force` | `has_prev` | `changed` | full-apply? |
-   |:---:|:---:|:---:|:---:|
-   | false | false | false | **yes** (first run) |
-   | false | false | true  | **yes** (first run) |
-   | false | true  | false | **no** — drift-check only |
-   | false | true  | true  | **yes** (HEAD moved) |
-   | true  | *      | *     | **yes** (`--force`) |
+   | `has_prev` | `changed` | full-apply? |
+   |:---:|:---:|:---:|
+   | false | false | **yes** (first run) |
+   | false | true  | **yes** (first run) |
+   | true  | false | **no** — drift-check only |
+   | true  | true  | **yes** (HEAD moved) |
 
-   i.e. `force || !has_prev || changed`. The only path that *skips* a full
-   apply is steady state (no force, prior state present, HEAD unchanged), which
-   takes the drift-check branch instead.
+   i.e. `!has_prev || changed`. The only path that *skips* a full apply is
+   steady state (prior state present, HEAD unchanged), which takes the
+   drift-check branch instead.
 
 6. **Apply or drift-check.**
    - Full-apply path: hooks and main resources are split by `hooks::classify`.
@@ -229,8 +228,8 @@ would dominate RSS on large clusters, so it is avoided entirely.
   namespaced ones.
 - **Server-side apply.** `apply` builds a `DynamicObject` from the manifest
   value and patches it with `Patch::Apply(&obj)` under
-  `PatchParams::apply(field_manager)` (`.force()` when `--force`), which claims
-  ownership of conflicting fields.
+  `PatchParams::apply(field_manager).force()`, which always claims ownership of
+  conflicting fields.
 - **List / Delete.** `list` supports an optional label selector (used by drift
   and prune); `delete` uses `DeleteParams::default()`.
 
@@ -240,7 +239,7 @@ and counted, but do not abort the pass.
 
 ## 8. Drift detection — periodic List, not Watch
 
-Drift detection runs only on **steady-state passes** (no force, prior state
+Drift detection runs only on **steady-state passes** (prior state
 present, HEAD unchanged) — every other pass is a full apply. This is done with
 periodic `List` calls, never `Watch`: a `Watch` keeps a long-lived connection
 and a streaming cache, and leancd only ever compares the resources Git directly

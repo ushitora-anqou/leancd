@@ -19,7 +19,7 @@ benchmark (see [bench/](bench/)).
   `post-upgrade` → after; `pre-delete`/`post-delete` on full teardown), plus
   `helm.sh/hook-weight`, `helm.sh/hook-delete-policy`, and
   `helm.sh/resource-policy: keep`. Job/Pod hooks are awaited to completion.
-- CLI for manual sync (`--force` to claim conflicting fields) and status.
+- CLI for manual sync and status. Server-side apply always claims conflicting fields.
 - Metrics exported over OTLP/HTTP (push), including `leancd_rss_bytes`.
 - Handles **all** resource kinds, including CRDs and cluster-scoped resources.
 
@@ -43,7 +43,7 @@ The resulting binary is a single static-ish executable run as a `Deployment`.
 
 ```
 leancd controller [flags]      run as a long-lived controller (deploy this)
-leancd sync    [--force] [flags]   run one reconciliation pass, then exit
+leancd sync    [flags]            run one reconciliation pass, then exit
 leancd status  [flags]            print the last recorded sync state
 ```
 
@@ -119,7 +119,7 @@ leancd as in-cluster Pods** (leancd is built into a container image via the
 root [`Dockerfile`](Dockerfile) and loaded into the kind node). It drives
 leancd's intended behaviour end-to-end across ~26 scenarios: initial apply, Git
 change detection + steady-state drift-check, drift self-heal, prune, state
-ConfigMap, the `sync`/`status`/`--force` CLI, OTLP metrics, cluster- and
+ConfigMap, the `sync`/`status` CLI, OTLP metrics, cluster- and
 namespaced-scope resources, CRDs, the controller polling loop, HTTPS basic-auth
 and SSH-key Git access, error recovery, and **Helm hooks** — PreSync/PostSync
 Job/Pod execution and completion, hook weights, `hook-delete-policy`,

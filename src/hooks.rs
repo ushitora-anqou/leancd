@@ -266,7 +266,6 @@ pub async fn run_phase(
     cfg: &Config,
     hooks: &[HookInfo],
     phase: HookPhase,
-    force: bool,
 ) -> PhaseOutcome {
     let mut ordered: Vec<HookInfo> = hooks.to_vec();
     sort_by_weight(&mut ordered);
@@ -281,7 +280,7 @@ pub async fn run_phase(
             weight = info.weight,
             "running helm hook"
         );
-        if let Err((key, reason)) = run_one(client, cfg, &info, force).await {
+        if let Err((key, reason)) = run_one(client, cfg, &info).await {
             tracing::warn!(phase = ?phase, key = ?key, reason = %reason, "helm hook failed");
             failures.push((key, reason));
             break;
@@ -298,7 +297,6 @@ async fn run_one(
     client: &Client,
     cfg: &Config,
     info: &HookInfo,
-    force: bool,
 ) -> std::result::Result<(), (ResourceKey, String)> {
     let key = info.key();
     let m = &info.manifest;
@@ -328,7 +326,6 @@ async fn run_one(
         &cfg.namespace,
         &m.data,
         &cfg.field_manager,
-        force,
     )
     .await
     .map_err(|e| (key.clone(), format!("apply failed: {e}")))?;

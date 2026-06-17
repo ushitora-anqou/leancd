@@ -43,7 +43,8 @@ pub fn api_for(
 }
 
 /// Server-side-apply a manifest value (already carrying apiVersion/kind/
-/// metadata). `force` claims ownership of conflicting fields.
+/// metadata). Always applies with `.force()` so conflicting fields owned by
+/// other managers are reclaimed.
 pub async fn apply(
     client: &Client,
     ar: &ApiResource,
@@ -51,7 +52,6 @@ pub async fn apply(
     default_namespace: &str,
     manifest: &serde_json::Value,
     field_manager: &str,
-    force: bool,
 ) -> Result<DynamicObject> {
     let obj: DynamicObject = serde_json::from_value(manifest.clone()).map_err(|e| {
         Error::Manifest(format!("failed to build DynamicObject from manifest: {e}"))
@@ -65,8 +65,7 @@ pub async fn apply(
 
     let api = api_for(client, ar, scope, namespace, default_namespace);
 
-    let pp = PatchParams::apply(field_manager);
-    let pp = if force { pp.force() } else { pp };
+    let pp = PatchParams::apply(field_manager).force();
     let patched = api
         .patch(&name, &pp, &Patch::Apply(&obj))
         .await

@@ -482,8 +482,8 @@ metadata:
     assert!(common::kubectl::exists("default", "configmap", "md-doc-c"));
 }
 
-/// Scenario 12: another field manager owns `data.k`; a normal sync cannot take
-/// it over, but `sync --force` claims it.
+/// Scenario 12: another field manager owns `data.k`; a normal sync claims it
+/// (SSA always applies with force, so conflicting fields are reclaimed).
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires docker + kind; run with: make e2e"]
 async fn force_conflict() {
@@ -507,24 +507,13 @@ async fn force_conflict() {
     );
     let args = env.sync_args(&fj.https_url(&env.repo));
 
-    // Normal sync: leancd cannot take over data.k (conflict), field stays "other".
+    // A single normal sync claims the conflicting field (SSA is always forced).
     assert!(common::leancd::sync(&args).success);
     let cm = common::kubectl::get_json("default", "configmap", "fc-cm");
     assert_eq!(
         cm["data"]["k"],
-        serde_json::json!("other"),
-        "normal sync must not take over a field owned by another manager"
-    );
-
-    // --force sync: claims the field.
-    let mut force_args = args.clone();
-    force_args.push("--force".to_string());
-    assert!(common::leancd::sync(&force_args).success);
-    let cm = common::kubectl::get_json("default", "configmap", "fc-cm");
-    assert_eq!(
-        cm["data"]["k"],
         serde_json::json!("v"),
-        "sync --force must take over the conflicting field"
+        "sync must take over a field owned by another manager (SSA is always forced)"
     );
 }
 

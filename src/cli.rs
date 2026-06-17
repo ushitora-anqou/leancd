@@ -20,13 +20,7 @@ pub enum Command {
     /// Run as a long-lived controller (deploy as a Deployment).
     Controller(CommonArgs),
     /// Perform a single reconciliation pass and exit.
-    Sync {
-        #[command(flatten)]
-        common: CommonArgs,
-        /// Force server-side-apply to take ownership of conflicting fields.
-        #[arg(long)]
-        force: bool,
-    },
+    Sync(CommonArgs),
     /// Print the last known sync state.
     Status(CommonArgs),
 }

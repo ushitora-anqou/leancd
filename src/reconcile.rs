@@ -25,10 +25,10 @@ pub struct Reconciler {
 }
 
 impl Reconciler {
-    /// One reconciliation pass. `force` enables force-conflict server-side apply.
-    pub async fn run_once(&self, force: bool) -> Result<()> {
+    /// One reconciliation pass.
+    pub async fn run_once(&self) -> Result<()> {
         self.metrics.sync_total.add(1, &[]);
-        match self.reconcile(force).await {
+        match self.reconcile().await {
             Ok(()) => {
                 self.metrics.set_last_success_epoch(now_epoch() as i64);
                 Ok(())
@@ -52,7 +52,7 @@ impl Reconciler {
         state::write(&self.client, &self.cfg, &s).await
     }
 
-    async fn reconcile(&self, force: bool) -> Result<()> {
+    async fn reconcile(&self) -> Result<()> {
         let prev = state::read(&self.client, &self.cfg).await?;
         let prev_sha = prev
             .as_ref()
@@ -93,7 +93,7 @@ impl Reconciler {
         // are managed by the hook engine and excluded from prune.
         let current_keys = prune::ResourceKey::keys_of(&classified.main);
 
-        let do_full = should_full_apply(force, prev.is_some(), sync.changed);
+        let do_full = should_full_apply(prev.is_some(), sync.changed);
         // A full teardown: every main resource has left Git while leancd still
         // has an applied set. pre-delete/post-delete hooks wrap the prune.
         let teardown = classified.main.is_empty() && !prev_applied.is_empty();
@@ -108,7 +108,6 @@ impl Reconciler {
                 .hook_phase(
                     &classified.pre_delete,
                     hooks::HookPhase::PreDelete,
-                    force,
                     "predelete",
                 )
                 .await;
@@ -122,7 +121,6 @@ impl Reconciler {
                 .hook_phase(
                     &classified.post_delete,
                     hooks::HookPhase::PostDelete,
-                    force,
                     "postdelete",
                 )
                 .await;
@@ -132,19 +130,14 @@ impl Reconciler {
         } else if do_full {
             // PreSync -> apply main -> PostSync.
             let pre = self
-                .hook_phase(&classified.pre, hooks::HookPhase::PreSync, force, "presync")
+                .hook_phase(&classified.pre, hooks::HookPhase::PreSync, "presync")
                 .await;
             if let Some((_, reason)) = pre.failures.first() {
                 return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
             }
-            self.apply_all(&classified.main, force).await?;
+            self.apply_all(&classified.main).await?;
             let post = self
-                .hook_phase(
-                    &classified.post,
-                    hooks::HookPhase::PostSync,
-                    force,
-                    "postsync",
-                )
+                .hook_phase(&classified.post, hooks::HookPhase::PostSync, "postsync")
                 .await;
             if let Some((_, reason)) = post.failures.first() {
                 post_error = Some(format!("post-sync hook failed: {reason}"));
@@ -159,22 +152,17 @@ impl Reconciler {
                     drift = drifts.len(),
                     "drift detected; re-applying managed resources"
                 );
-                // force-apply on drift-triggered self-heal so a field claimed by
-                // another SSA field manager is reclaimed back to Git.
+                // Re-apply on drift so a field claimed by another SSA field
+                // manager is reclaimed back to Git (all applies force-conflict SSA).
                 let pre = self
-                    .hook_phase(&classified.pre, hooks::HookPhase::PreSync, true, "presync")
+                    .hook_phase(&classified.pre, hooks::HookPhase::PreSync, "presync")
                     .await;
                 if let Some((_, reason)) = pre.failures.first() {
                     return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
                 }
-                self.apply_all(&classified.main, true).await?;
+                self.apply_all(&classified.main).await?;
                 let post = self
-                    .hook_phase(
-                        &classified.post,
-                        hooks::HookPhase::PostSync,
-                        true,
-                        "postsync",
-                    )
+                    .hook_phase(&classified.post, hooks::HookPhase::PostSync, "postsync")
                     .await;
                 if let Some((_, reason)) = post.failures.first() {
                     post_error = Some(format!("post-sync hook failed: {reason}"));
@@ -218,7 +206,7 @@ impl Reconciler {
         }
 
         tracing::info!(
-            sha = %sync.sha, force, full = do_full, teardown,
+            sha = %sync.sha, full = do_full, teardown,
             managed = current_keys.len(), pruned, drift = drift_count,
             "reconciliation complete"
         );
@@ -227,7 +215,7 @@ impl Reconciler {
 
     /// Apply every manifest, sharing one API-discovery lookup per resource kind.
     /// Individual apply failures are logged but do not abort the pass.
-    async fn apply_all(&self, manifests: &[RawManifest], force: bool) -> Result<()> {
+    async fn apply_all(&self, manifests: &[RawManifest]) -> Result<()> {
         let mut cache: HashMap<
             (String, String, String),
             (kube::core::ApiResource, kube::discovery::ApiCapabilities),
@@ -259,7 +247,6 @@ impl Reconciler {
                 &self.cfg.namespace,
                 &m.data,
                 &self.cfg.field_manager,
-                force,
             )
             .await
             {
@@ -283,10 +270,9 @@ impl Reconciler {
         &self,
         hooks_list: &[hooks::HookInfo],
         phase: hooks::HookPhase,
-        force: bool,
         label: &'static str,
     ) -> hooks::PhaseOutcome {
-        let outcome = hooks::run_phase(&self.client, &self.cfg, hooks_list, phase, force).await;
+        let outcome = hooks::run_phase(&self.client, &self.cfg, hooks_list, phase).await;
         let failed = outcome.failures.len() as u64;
         let succeeded = outcome.attempted.saturating_sub(outcome.failures.len()) as u64;
         self.metrics.record_hooks(label, succeeded, failed);
@@ -297,7 +283,7 @@ impl Reconciler {
     /// be spawned and aborted for shutdown.
     pub async fn run_loop(&self) -> Result<()> {
         loop {
-            if let Err(e) = self.run_once(false).await {
+            if let Err(e) = self.run_once().await {
                 tracing::error!(error = %e, "reconciliation failed");
             }
             tokio::time::sleep(self.cfg.poll_interval).await;
@@ -306,10 +292,10 @@ impl Reconciler {
 }
 
 /// Whether a reconciliation should fully re-apply every manifest (rather than
-/// only drift-check). Full apply runs on `--force`, first run (no prior state),
-/// or when the Git HEAD moved. Pure: no API calls.
-fn should_full_apply(force: bool, has_prev: bool, changed: bool) -> bool {
-    force || !has_prev || changed
+/// only drift-check). Full apply runs on the first run (no prior state) or when
+/// the Git HEAD moved. Pure: no API calls.
+fn should_full_apply(has_prev: bool, changed: bool) -> bool {
+    !has_prev || changed
 }
 
 fn now_epoch() -> u64 {
@@ -323,33 +309,24 @@ fn now_epoch() -> u64 {
 mod tests {
     use super::*;
 
-    /// `should_full_apply` is true when force is set, there is no prior state
-    /// (first run), or the Git HEAD moved. Otherwise (steady state) we
-    /// drift-check instead of re-applying. Verified exhaustively.
+    /// `should_full_apply` is true when there is no prior state (first run) or
+    /// the Git HEAD moved. Otherwise (steady state) we drift-check instead of
+    /// re-applying. Verified exhaustively.
     #[test]
     fn should_full_apply_truth_table() {
-        for &(force, has_prev, changed) in &[
-            (false, false, false),
-            (false, false, true),
-            (false, true, false),
-            (false, true, true),
-            (true, false, false),
-            (true, false, true),
-            (true, true, false),
-            (true, true, true),
-        ] {
+        for &(has_prev, changed) in &[(false, false), (false, true), (true, false), (true, true)] {
             assert_eq!(
-                should_full_apply(force, has_prev, changed),
-                force || !has_prev || changed,
-                "force={force} has_prev={has_prev} changed={changed}"
+                should_full_apply(has_prev, changed),
+                !has_prev || changed,
+                "has_prev={has_prev} changed={changed}"
             );
         }
     }
 
     #[test]
     fn steady_state_does_not_full_apply() {
-        // The only combination that skips full apply: no force, has prior
-        // state, no Git change -> the drift-check path.
-        assert!(!should_full_apply(false, true, false));
+        // The only combination that skips full apply: has prior state, no Git
+        // change -> the drift-check path.
+        assert!(!should_full_apply(true, false));
     }
 }

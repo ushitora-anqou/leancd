@@ -58,17 +58,17 @@ as a first run and re-applies everything (safe, just less efficient).
 Each pass: fetch Git → parse manifests → either **full-apply** or
 **drift-check** → prune → write state.
 
-leancd fully re-applies every manifest on the first run, when `--force` is set,
-or when the Git HEAD moved. In **steady state** (no force, prior state present,
-HEAD unchanged) it instead does a cheap drift check and only re-applies if
-drift is found. This keeps steady-state API traffic minimal.
+leancd fully re-applies every manifest on the first run or when the Git HEAD
+moved. In **steady state** (prior state present, HEAD unchanged) it instead
+does a cheap drift check and only re-applies if drift is found. This keeps
+steady-state API traffic minimal.
 
 ### Server-side apply (SSA)
 
 All applies use Kubernetes server-side apply under a field manager (default
 `leancd`, configurable via `--field-manager`). SSA is idempotent and lets
-leancd coexist with other managers; `--force` makes SSA claim ownership of
-conflicting fields.
+leancd coexist with other managers; applies always run with `.force()`, so SSA
+claims ownership of conflicting fields.
 
 ### Helm hooks
 
@@ -157,19 +157,18 @@ leancd controller --repo-url https://github.com/org/manifests.git
 On `SIGINT`/`SIGTERM` it aborts the reconcile loop and flushes the OTel meter
 provider (one final export), then exits.
 
-### `leancd sync [--force]`
+### `leancd sync`
 
 Runs exactly one reconciliation pass, then exits. Exit code is non-zero if the
 pass failed. Use this from CI, cron, or a one-off `kubectl exec`.
 
 ```sh
 leancd sync                          # one pass
-leancd sync --force                  # one pass, claim conflicting fields
 ```
 
-`--force` enables force-conflict server-side apply: leancd takes ownership of
-fields currently owned by another field manager. Use it to recover from a
-field-conflict error, not routinely.
+Applies always run with force-conflict server-side apply, so leancd takes
+ownership of fields currently owned by another field manager — field conflicts
+never block a sync.
 
 ### `leancd status`
 
@@ -216,7 +215,6 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 | `--managed-label-value` | — | `leancd` | all | managed-by label value |
 | `--field-manager` | — | `leancd` | all | SSA field manager name |
 | `--hook-timeout-secs` | `LEANCD_HOOK_TIMEOUT_SECS` | `300` | all | per-hook (Job/Pod) completion timeout before it is treated as failed (see [Helm hooks](#helm-hooks)) |
-| `--force` | — | `false` | `sync` only | force-conflict server-side apply |
 
 `--poll-interval` and `--git-*-env` are accepted by all subcommands (they are
 part of `CommonArgs`) but only `controller` uses `--poll-interval` in a
@@ -409,7 +407,7 @@ deployment orphans its previously-applied resources (they keep the old label).
 
 `--field-manager` (default `leancd`) is the SSA field-manager identity. SSA
 tracks field ownership by manager name; renaming it means leancd loses
-ownership of fields it applied under the old name (a subsequent `--force` sync
+ownership of fields it applied under the old name (a subsequent sync
 re-claims them). Keep it stable across the lifetime of a deployment.
 
 ### 8.5 Resource limits
@@ -431,7 +429,7 @@ level is `info`. Set `RUST_LOG=debug` for verbose output, or target a module:
 RUST_LOG=leancd=debug,kube=info
 ```
 
-Structured fields include `error = %e`, `sha`, `force`, `full`, `managed`,
+Structured fields include `error = %e`, `sha`, `full`, `managed`,
 `pruned`, `drift`, and the resource `key`. Each pass logs
 `reconciliation complete` on success.
 
@@ -449,7 +447,6 @@ kubectl -n <namespace> get configmap <state-configmap> -o yaml
 
 ```sh
 kubectl -n leancd exec deploy/leancd -- leancd sync          # one pass
-kubectl -n leancd exec deploy/leancd -- leancd sync --force  # claim conflicts
 ```
 
 This runs one pass immediately without waiting for the next poll cycle. It uses
@@ -493,9 +490,8 @@ truth; back up your repository, not the state ConfigMap.
 | Pod `CrashLoopBackOff` | `LEANCD_REPO_URL` unset, or a hard config/git error | `kubectl logs`; check env and that the URL is reachable |
 | `git ... failed: ... could not read Username` | HTTPS credentials missing or empty | Create the Secret with `GIT_USERNAME`/`GIT_PASSWORD`; `GIT_TERMINAL_PROMPT=0` prevents a hang |
 | `git ... failed: ... Permission denied (publickey)` | SSH key missing or wrong | Ensure `GIT_SSH_KEY` holds a valid PEM key and the URL is `git@`/`ssh://` |
-| Drift never detected on an old resource | The resource predates leancd and lacks the managed-by label | Re-apply via `sync --force`, or label it manually |
+| Drift never detected on an old resource | The resource predates leancd and lacks the managed-by label | Re-apply via `sync`, or label it manually |
 | Prune deletes nothing after state loss | Expected: the safety-net prune only covers previously-applied GVKs | Re-apply, then remove from Git; the next pass prunes |
-| SSA `fieldManagerConflict` / apply conflict | Another manager owns a field | `leancd sync --force` once, or reconcile with the other manager |
 | First reconcile re-applies everything | Expected: no prior state | None — this is correct first-run behaviour |
 | `leancd_rss_bytes` absent or 0 | `/proc` unavailable (non-Linux host), or metrics not reaching the collector | Run on Linux; check `OTEL_EXPORTER_OTLP_ENDPOINT` and that the collector is up |
 | `status` says `no sync state recorded yet` | First run hasn't completed, or state ConfigMap was deleted | Wait one pass; or run `leancd sync` |

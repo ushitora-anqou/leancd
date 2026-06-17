@@ -34,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Controller(args) => run_controller(args.to_config()?).await?,
-        Command::Sync { common, force } => run_sync(common.to_config()?, force).await?,
+        Command::Sync(common) => run_sync(common.to_config()?).await?,
         Command::Status(args) => run_status(args.to_config()?).await?,
     }
     Ok(())
@@ -66,8 +66,8 @@ async fn run_controller(cfg: config::Config) -> Result<()> {
     Ok(())
 }
 
-/// Perform a single reconciliation pass (optionally with force-conflict apply).
-async fn run_sync(cfg: config::Config, force: bool) -> Result<()> {
+/// Perform a single reconciliation pass.
+async fn run_sync(cfg: config::Config) -> Result<()> {
     let client = Client::try_default().await?;
     let provider = metrics::init_meter_provider()?;
     let meter = provider.meter("leancd");
@@ -77,7 +77,7 @@ async fn run_sync(cfg: config::Config, force: bool) -> Result<()> {
         cfg,
         metrics,
     };
-    let res = recon.run_once(force).await;
+    let res = recon.run_once().await;
     if let Err(e) = provider.shutdown() {
         tracing::warn!(error = %e, "failed to flush metrics on shutdown");
     }

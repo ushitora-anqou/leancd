@@ -42,14 +42,14 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 
 ### Single binary, three subcommands, one shared engine
 
-`clap` (derive) defines `controller`, `sync`, and `status` (`cli.rs`). `controller` (long-lived, the `Deployment`) and `sync` (one pass, optional `--force`) are dispatched to **the same `Reconciler`** (`reconcile.rs`) — `run_loop()` just calls `run_once(false)` on a poll interval, `sync` calls `run_once(force)` once and exits. This guarantees manual and automatic sync use identical apply logic. `status` is read-only (reads the state ConfigMap).
+`clap` (derive) defines `controller`, `sync`, and `status` (`cli.rs`). `controller` (long-lived, the `Deployment`) and `sync` (one pass) are dispatched to **the same `Reconciler`** (`reconcile.rs`) — `run_loop()` just calls `run_once()` on a poll interval, `sync` calls `run_once()` once and exits. This guarantees manual and automatic sync use identical apply logic. `status` is read-only (reads the state ConfigMap).
 
 ### Reconciliation flow (`reconcile.rs::reconcile`)
 
 1. Read prior state from the state ConfigMap (`state.rs`) — previous HEAD SHA + previously-applied resource keys.
 2. `git_sync::sync` — shallow `fetch`/`clone` (`--depth 1`), compare HEAD SHA → `changed` bool. Short-circuits heavy work when nothing moved.
 3. `manifest::parse_dir` — streaming, per-document YAML parse into untyped `RawManifest`s; inject the managed-by label into each.
-4. **Full apply** when `force || first run || sha changed`; otherwise **drift-check** (`drift::detect`) and re-apply only if drift is found. `hooks::classify` splits manifests into phases; on a full apply the order is **PreSync hooks → `apply_all`(main) → PostSync hooks** (Job/Pod hooks are awaited to completion; a failed PreSync hook aborts the pass). A **full teardown** (main set empty, prior applied set non-empty) runs **pre-delete → prune all → post-delete**.
+4. **Full apply** when `first run || sha changed`; otherwise **drift-check** (`drift::detect`) and re-apply only if drift is found. `hooks::classify` splits manifests into phases; on a full apply the order is **PreSync hooks → `apply_all`(main) → PostSync hooks** (Job/Pod hooks are awaited to completion; a failed PreSync hook aborts the pass). A **full teardown** (main set empty, prior applied set non-empty) runs **pre-delete → prune all → post-delete**.
 5. `prune::prune` — delete keys in the prior applied set that are absent from the current Git set. Live objects with `helm.sh/resource-policy: keep` or `helm.sh/hook` are kept (hooks are managed by `hooks.rs`, not the prune set-diff).
 6. Write updated state (new SHA, applied **main** keys, counts) back to the ConfigMap; update OTel instruments.
 
