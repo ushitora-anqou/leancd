@@ -47,6 +47,10 @@ pub struct Config {
     pub managed_label_value: String,
     /// Server-side-apply field manager identity.
     pub field_manager: String,
+
+    /// Maximum time to wait for a Helm hook (Job/Pod) to reach a terminal
+    /// state before treating it as failed.
+    pub hook_timeout: std::time::Duration,
 }
 
 impl Config {
@@ -229,6 +233,7 @@ mod tests {
             managed_label_key: "app.kubernetes.io/managed-by".into(),
             managed_label_value: "leancd".into(),
             field_manager: "leancd".into(),
+            hook_timeout: std::time::Duration::from_secs(300),
         }
     }
 

@@ -213,6 +213,17 @@ fn collect_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Read a single `metadata.annotations` entry from a manifest, or `None` when
+/// the annotation (or `metadata`/`annotations`) is absent or not a string.
+pub fn annotation(m: &RawManifest, key: &str) -> Option<String> {
+    m.data
+        .get("metadata")?
+        .get("annotations")?
+        .get(key)?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
 /// Inject the managed-by label into a manifest's `metadata.labels` so the
 /// resource can be safely pruned later.
 pub fn inject_managed_label(m: &mut RawManifest, key: &str, value: &str) {
@@ -279,6 +290,31 @@ spec:
         assert_eq!(ms[1].group, "apps");
         assert_eq!(ms[1].kind, "Deployment");
         assert_eq!(ms[1].name, "d");
+    }
+
+    #[test]
+    fn annotation_reads_metadata_annotations() {
+        let v = json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "a",
+                "annotations": { "helm.sh/hook": "pre-install" }
+            }
+        });
+        let m = value_to_manifest(v).unwrap().unwrap();
+        assert_eq!(
+            annotation(&m, "helm.sh/hook").as_deref(),
+            Some("pre-install")
+        );
+        assert_eq!(annotation(&m, "missing"), None);
+    }
+
+    #[test]
+    fn annotation_none_when_no_annotations() {
+        let v = json!({ "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": "a" } });
+        let m = value_to_manifest(v).unwrap().unwrap();
+        assert_eq!(annotation(&m, "helm.sh/hook"), None);
     }
 
     #[test]

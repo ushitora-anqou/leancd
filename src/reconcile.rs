@@ -11,6 +11,7 @@ use kube::client::Client;
 use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::git_sync;
+use crate::hooks;
 use crate::kube_util;
 use crate::manifest::{self, RawManifest};
 use crate::metrics::Metrics;
@@ -61,7 +62,19 @@ impl Reconciler {
 
         let sync = git_sync::sync(&self.cfg, prev_sha.as_deref()).await?;
         let work = Path::new(&self.cfg.work_dir);
-        let roots = manifest::expand_roots(work, &self.cfg.path)?;
+        let roots = match manifest::expand_roots(work, &self.cfg.path) {
+            Ok(r) => r,
+            Err(Error::Config(_)) if !prev_applied.is_empty() => {
+                // The sync path matches no directories, but leancd previously
+                // managed resources: treat an emptied repo/path as a full
+                // teardown rather than the usual "would prune everything"
+                // fail-fast. pre-delete/post-delete hooks (if any remain in Git)
+                // wrap the prune.
+                tracing::info!("sync path matches no directories; treating as full teardown");
+                Vec::new()
+            }
+            Err(e) => return Err(e),
+        };
         tracing::debug!(
             roots = roots.len(),
             patterns = ?self.cfg.path,
@@ -75,14 +88,69 @@ impl Reconciler {
                 &self.cfg.managed_label_value,
             );
         }
-        let current_keys = prune::ResourceKey::keys_of(&manifests);
+        let classified = hooks::classify(manifests);
+        // Only non-hook ("main") resources are tracked in the applied set; hooks
+        // are managed by the hook engine and excluded from prune.
+        let current_keys = prune::ResourceKey::keys_of(&classified.main);
 
         let do_full = should_full_apply(force, prev.is_some(), sync.changed);
+        // A full teardown: every main resource has left Git while leancd still
+        // has an applied set. pre-delete/post-delete hooks wrap the prune.
+        let teardown = classified.main.is_empty() && !prev_applied.is_empty();
+
         let mut drifts: Vec<drift::DriftItem> = Vec::new();
-        if do_full {
-            self.apply_all(&manifests, force).await?;
+        let mut post_error: Option<String> = None;
+        let mut pruned = 0usize;
+
+        if teardown {
+            // pre-delete hooks; abort (skip the prune) on failure.
+            let pre = self
+                .hook_phase(
+                    &classified.pre_delete,
+                    hooks::HookPhase::PreDelete,
+                    force,
+                    "predelete",
+                )
+                .await;
+            if let Some((_, reason)) = pre.failures.first() {
+                return Err(Error::Hook(format!("pre-delete hook failed: {reason}")));
+            }
+            pruned = prune::prune(&self.client, &prev_applied, &current_keys, &self.cfg)
+                .await?
+                .len();
+            let post = self
+                .hook_phase(
+                    &classified.post_delete,
+                    hooks::HookPhase::PostDelete,
+                    force,
+                    "postdelete",
+                )
+                .await;
+            if let Some((_, reason)) = post.failures.first() {
+                post_error = Some(format!("post-delete hook failed: {reason}"));
+            }
+        } else if do_full {
+            // PreSync -> apply main -> PostSync.
+            let pre = self
+                .hook_phase(&classified.pre, hooks::HookPhase::PreSync, force, "presync")
+                .await;
+            if let Some((_, reason)) = pre.failures.first() {
+                return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
+            }
+            self.apply_all(&classified.main, force).await?;
+            let post = self
+                .hook_phase(
+                    &classified.post,
+                    hooks::HookPhase::PostSync,
+                    force,
+                    "postsync",
+                )
+                .await;
+            if let Some((_, reason)) = post.failures.first() {
+                post_error = Some(format!("post-sync hook failed: {reason}"));
+            }
         } else {
-            drifts = drift::detect(&self.client, &manifests, &self.cfg).await?;
+            drifts = drift::detect(&self.client, &classified.main, &self.cfg).await?;
             for d in &drifts {
                 tracing::warn!(key = ?d.key, reason = %d.reason, "drift detected");
             }
@@ -91,22 +159,41 @@ impl Reconciler {
                     drift = drifts.len(),
                     "drift detected; re-applying managed resources"
                 );
-                // BUG 4: force-apply on drift-triggered self-heal so a field
-                // claimed by another SSA field manager (e.g. `kubectl
-                // edit/patch`) is reclaimed back to Git. The controller's
-                // top-level `force` (false) still governs the initial full apply.
-                self.apply_all(&manifests, true).await?;
+                // force-apply on drift-triggered self-heal so a field claimed by
+                // another SSA field manager is reclaimed back to Git.
+                let pre = self
+                    .hook_phase(&classified.pre, hooks::HookPhase::PreSync, true, "presync")
+                    .await;
+                if let Some((_, reason)) = pre.failures.first() {
+                    return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
+                }
+                self.apply_all(&classified.main, true).await?;
+                let post = self
+                    .hook_phase(
+                        &classified.post,
+                        hooks::HookPhase::PostSync,
+                        true,
+                        "postsync",
+                    )
+                    .await;
+                if let Some((_, reason)) = post.failures.first() {
+                    post_error = Some(format!("post-sync hook failed: {reason}"));
+                }
             }
         }
         let drift_count = drifts.len();
 
-        let deleted = prune::prune(&self.client, &prev_applied, &current_keys, &self.cfg).await?;
+        if !teardown {
+            pruned = prune::prune(&self.client, &prev_applied, &current_keys, &self.cfg)
+                .await?
+                .len();
+        }
 
         let mut new_state = prev.clone().unwrap_or_default();
         new_state.last_sha = Some(sync.sha.clone());
         new_state.last_sync_epoch = Some(now_epoch());
         new_state.sync_count = new_state.sync_count.saturating_add(1);
-        new_state.last_error = None;
+        new_state.last_error = post_error;
         new_state.drift_count = drift_count;
         new_state.managed_count = current_keys.len();
         new_state.applied = current_keys.clone();
@@ -131,8 +218,8 @@ impl Reconciler {
         }
 
         tracing::info!(
-            sha = %sync.sha, force, full = do_full,
-            managed = current_keys.len(), pruned = deleted.len(), drift = drift_count,
+            sha = %sync.sha, force, full = do_full, teardown,
+            managed = current_keys.len(), pruned, drift = drift_count,
             "reconciliation complete"
         );
         Ok(())
@@ -189,6 +276,21 @@ impl Reconciler {
             tracing::debug!(applied, "apply pass complete");
         }
         Ok(())
+    }
+
+    /// Run one hook phase and record its outcome metrics, returning the outcome.
+    async fn hook_phase(
+        &self,
+        hooks_list: &[hooks::HookInfo],
+        phase: hooks::HookPhase,
+        force: bool,
+        label: &'static str,
+    ) -> hooks::PhaseOutcome {
+        let outcome = hooks::run_phase(&self.client, &self.cfg, hooks_list, phase, force).await;
+        let failed = outcome.failures.len() as u64;
+        let succeeded = outcome.attempted.saturating_sub(outcome.failures.len()) as u64;
+        self.metrics.record_hooks(label, succeeded, failed);
+        outcome
     }
 
     /// Run reconciliation forever on the configured poll interval. Designed to

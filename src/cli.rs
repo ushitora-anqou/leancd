@@ -89,6 +89,11 @@ pub struct CommonArgs {
     /// SSA field manager name.
     #[arg(long, default_value = "leancd")]
     pub field_manager: String,
+
+    /// Per-hook completion timeout in seconds (Job/Pod hooks). A hook that does
+    /// not reach a terminal state within this window is treated as failed.
+    #[arg(long, env = "LEANCD_HOOK_TIMEOUT_SECS", default_value = "300")]
+    pub hook_timeout_secs: u64,
 }
 
 impl CommonArgs {
@@ -113,6 +118,43 @@ impl CommonArgs {
             managed_label_key: self.managed_label_key.clone(),
             managed_label_value: self.managed_label_value.clone(),
             field_manager: self.field_manager.clone(),
+            hook_timeout: Duration::from_secs(self.hook_timeout_secs),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn common(hook_secs: u64) -> CommonArgs {
+        CommonArgs {
+            repo_url: "https://example.com/o/r".into(),
+            branch: "main".into(),
+            path: vec![],
+            poll_interval: "60s".into(),
+            namespace: "default".into(),
+            state_configmap: "leancd-state".into(),
+            work_dir: "/tmp/leancd-work".into(),
+            git_username_env: "GIT_USERNAME".into(),
+            git_password_env: "GIT_PASSWORD".into(),
+            git_ssh_key_env: "GIT_SSH_KEY".into(),
+            managed_label_key: "app.kubernetes.io/managed-by".into(),
+            managed_label_value: "leancd".into(),
+            field_manager: "leancd".into(),
+            hook_timeout_secs: hook_secs,
+        }
+    }
+
+    #[test]
+    fn hook_timeout_maps_seconds_to_duration() {
+        assert_eq!(
+            common(300).to_config().unwrap().hook_timeout,
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            common(0).to_config().unwrap().hook_timeout,
+            Duration::from_secs(0)
+        );
     }
 }

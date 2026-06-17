@@ -37,6 +37,7 @@ struct MetricsState {
 pub struct Metrics {
     pub sync_total: Counter<u64>,
     pub sync_errors: Counter<u64>,
+    pub hooks_total: Counter<u64>,
     state: Arc<Mutex<MetricsState>>,
     _gauges: [ObservableGauge<i64>; 4],
 }
@@ -54,6 +55,10 @@ impl Metrics {
         let sync_errors = meter
             .u64_counter("leancd_sync_errors_total")
             .with_description("Number of failed reconciliations")
+            .build();
+        let hooks_total = meter
+            .u64_counter("leancd_hooks_total")
+            .with_description("Helm hooks executed, by phase and result")
             .build();
 
         let st = state.clone();
@@ -106,6 +111,7 @@ impl Metrics {
         Self {
             sync_total,
             sync_errors,
+            hooks_total,
             state,
             _gauges: [last_success, managed, rss, drift],
         }
@@ -119,6 +125,30 @@ impl Metrics {
     /// Record how many resources leancd currently manages.
     pub fn set_managed_resources(&self, v: i64) {
         self.state.lock().unwrap().managed_resources = v;
+    }
+
+    /// Record hook executions for one phase, split by outcome. Attributes
+    /// distinguish the phase (`presync`, `postsync`, `predelete`, `postdelete`)
+    /// and the result (`succeeded` / `failed`).
+    pub fn record_hooks(&self, phase: &str, succeeded: u64, failed: u64) {
+        if succeeded > 0 {
+            self.hooks_total.add(
+                succeeded,
+                &[
+                    KeyValue::new("phase", phase.to_string()),
+                    KeyValue::new("result", "succeeded".to_string()),
+                ],
+            );
+        }
+        if failed > 0 {
+            self.hooks_total.add(
+                failed,
+                &[
+                    KeyValue::new("phase", phase.to_string()),
+                    KeyValue::new("result", "failed".to_string()),
+                ],
+            );
+        }
     }
 
     /// Clear all per-GVK drift counts (resolved drifts disappear next pass).

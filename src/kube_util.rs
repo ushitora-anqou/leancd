@@ -107,3 +107,23 @@ pub async fn delete(
     let _ = api.delete(name, &DeleteParams::default()).await?;
     Ok(())
 }
+
+/// Fetch a single resource by name. Returns `None` on 404 (already gone) so
+/// callers can poll hook resources without distinguishing a deleted object
+/// from a transient miss. `DynamicObject.data` is `#[serde(flatten)]`, so a
+/// resource's `status` lives at `obj.data["status"]`.
+pub async fn get(
+    client: &Client,
+    ar: &ApiResource,
+    scope: &Scope,
+    namespace: Option<&str>,
+    default_namespace: &str,
+    name: &str,
+) -> Result<Option<DynamicObject>> {
+    let api = api_for(client, ar, scope, namespace, default_namespace);
+    match api.get(name).await {
+        Ok(obj) => Ok(Some(obj)),
+        Err(kube::Error::Api(e)) if e.code == 404 => Ok(None),
+        Err(e) => Err(Error::Kube(e)),
+    }
+}

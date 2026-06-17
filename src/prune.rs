@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::error::Result;
+use crate::hooks;
 use crate::kube_util;
 use crate::manifest::RawManifest;
 
@@ -54,6 +55,26 @@ impl ResourceKey {
             name: obj.metadata.name.clone().unwrap_or_default(),
         }
     }
+}
+
+/// Whether a live resource must be excluded from pruning.
+///
+/// Honours `helm.sh/resource-policy: keep` (never delete, matching Argo CD's
+/// `shouldBeDeleted`) and `helm.sh/hook` (hook resources are managed by the
+/// hook engine, not the prune set-diff). Pure.
+pub fn should_skip_deletion(obj: &DynamicObject) -> bool {
+    let annos = match obj.metadata.annotations.as_ref() {
+        Some(a) => a,
+        None => return false,
+    };
+    if annos
+        .get(hooks::RESOURCE_POLICY_ANNOTATION)
+        .map(|v| v.as_str())
+        == Some(hooks::RESOURCE_POLICY_KEEP)
+    {
+        return true;
+    }
+    annos.contains_key(hooks::HOOK_ANNOTATION)
 }
 
 /// Resources present in `prev` but absent from `current` — the deletion set
@@ -159,6 +180,32 @@ pub async fn prune(
                 }
             },
         };
+        // Honour `helm.sh/resource-policy: keep` and `helm.sh/hook`: inspect the
+        // live object before deleting. A missing object (already gone) is a no-op.
+        match kube_util::get(
+            client,
+            &ar,
+            &caps.scope,
+            key.namespace.as_deref(),
+            &cfg.namespace,
+            &key.name,
+        )
+        .await
+        {
+            Ok(None) => continue,
+            Ok(Some(obj)) if should_skip_deletion(&obj) => {
+                tracing::info!(
+                    key = ?key,
+                    "prune: keeping resource (resource-policy=keep or helm hook)"
+                );
+                continue;
+            }
+            Ok(Some(_)) => {}
+            Err(e) => {
+                tracing::warn!(error = %e, key = ?key, "prune: get failed, skipping");
+                continue;
+            }
+        }
         match kube_util::delete(
             client,
             &ar,
@@ -292,5 +339,46 @@ mod tests {
         let k = ResourceKey::from_dynamic(&obj, "", "v1", "Namespace");
         assert_eq!(k.name, "leancd-bench");
         assert!(k.namespace.is_none());
+    }
+
+    // --- should_skip_deletion: honour resource-policy:keep and helm hooks ---
+
+    fn dyn_with(annos: &[(&str, &str)]) -> DynamicObject {
+        let mut meta = json!({"name": "x"});
+        if !annos.is_empty() {
+            let a: serde_json::Map<String, serde_json::Value> = annos
+                .iter()
+                .map(|(k, v)| (k.to_string(), json!(v)))
+                .collect();
+            meta["annotations"] = serde_json::Value::Object(a);
+        }
+        serde_json::from_value(json!({"metadata": meta})).unwrap()
+    }
+
+    #[test]
+    fn keep_resource_is_not_deleted() {
+        let obj = dyn_with(&[("helm.sh/resource-policy", "keep")]);
+        assert!(should_skip_deletion(&obj));
+    }
+
+    #[test]
+    fn hook_resource_is_not_deleted() {
+        let obj = dyn_with(&[("helm.sh/hook", "pre-install")]);
+        assert!(should_skip_deletion(&obj));
+        let obj = dyn_with(&[("helm.sh/hook", "post-delete")]);
+        assert!(should_skip_deletion(&obj));
+    }
+
+    #[test]
+    fn plain_resource_is_deletable() {
+        let obj = dyn_with(&[]);
+        assert!(!should_skip_deletion(&obj));
+    }
+
+    #[test]
+    fn non_keep_resource_policy_is_deletable() {
+        // Only the literal "keep" value exempts a resource.
+        let obj = dyn_with(&[("helm.sh/resource-policy", "something-else")]);
+        assert!(!should_skip_deletion(&obj));
     }
 }

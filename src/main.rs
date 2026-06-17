@@ -5,6 +5,7 @@ mod config;
 mod drift;
 mod error;
 mod git_sync;
+mod hooks;
 mod kube_util;
 mod manifest;
 mod metrics;
