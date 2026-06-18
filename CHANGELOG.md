@@ -9,8 +9,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added — production readiness
 
 - **Backoff on failure**: the controller now backs off exponentially
-  (`--backoff-base`/`--backoff-max`) on consecutive sync failures, capped and
-  reset to the poll interval on success.
+  (`--backoff-base`/`--backoff-max`) on consecutive sync failures, capped,
+  jittered (`[0.75x, 1.0x)` to avoid synchronisation), and reset to the poll
+  interval on success.
 - **Graceful shutdown**: `--shutdown-timeout` makes the controller finish the
   in-flight reconciliation pass on SIGTERM, falling back to abort after the
   grace period (no more mid-pass abort).

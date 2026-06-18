@@ -357,8 +357,9 @@ footprint at collection time.
   `sync_errors` on failure. Per-resource apply/prune/drift failures are `warn!`-
   logged and the pass continues. The controller loop never exits on a pass
   error — it logs and backs off: a failing pass waits an exponential
-  `backoff_delay` (`backoff_base`·2ⁿ, capped at `backoff_max`) before the next
-  attempt, resetting to `poll_interval` on success. Shutdown is cooperative (see
+  `backoff_delay` (`backoff_base`·2ⁿ, capped at `backoff_max`), jittered to
+  `[0.75x, 1.0x)`, before the next attempt, resetting to `poll_interval` on
+  success. Shutdown is cooperative (see
   [§3](#3-the-single-binary-and-its-three-subcommands)).
 - **`main`'s top-level errors** use `anyhow` (exit non-zero); library code uses
   `crate::error::{Error, Result}` (a `thiserror` enum).

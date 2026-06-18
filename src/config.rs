@@ -54,7 +54,9 @@ pub struct Config {
 
     /// Base delay for exponential backoff after a failed reconciliation pass.
     /// The first retry waits `backoff_base`, then `2*backoff_base`, and so on,
-    /// capped at `backoff_max`. A successful pass resets the backoff to zero.
+    /// capped at `backoff_max`, and jittered to `[0.75x, 1.0x)` in the
+    /// controller loop (see `reconcile::jittered`). A successful pass resets
+    /// the backoff to zero.
     pub backoff_base: std::time::Duration,
     /// Maximum (cap) backoff delay between retries after repeated failures.
     pub backoff_max: std::time::Duration,

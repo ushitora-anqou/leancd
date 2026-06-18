@@ -159,8 +159,9 @@ pass finishes, then the loop exits and the OTel meter provider is flushed (one
 final export). If a pass does not finish within `--shutdown-timeout-secs`, the
 task is force-aborted as a fallback so Pod termination is not blocked. A
 failing pass is retried after an exponential backoff (`--backoff-base`/
-`--backoff-max`), reset to `--poll-interval` on success. `SIGHUP` reloads the
-log filter from `RUST_LOG` without restarting.
+`--backoff-max`), reset to `--poll-interval` on success; the backoff delay is
+jittered to `[0.75x, 1.0x)` so repeated failures across instances do not
+synchronise. `SIGHUP` reloads the log filter from `RUST_LOG` without restarting.
 
 ### `leancd sync`
 
