@@ -234,7 +234,10 @@ would dominate RSS on large clusters, so it is avoided entirely.
   `PatchParams::apply(field_manager).force()`, which always claims ownership of
   conflicting fields.
 - **List / Delete.** `list` supports an optional label selector (used by drift
-  and prune); `delete` uses `DeleteParams::default()`.
+  and prune); `delete` uses foreground cascade deletion
+  (`DeleteParams::foreground()` → `propagationPolicy: Foreground`) so an owner
+  resource is held behind a `foregroundDeletion` finalizer until its dependents
+  are gone. The same policy is used for Helm-hook and full-teardown deletions.
 
 `apply_all` iterates the manifest slice, resolving each GVK once (cached) and
 applying each resource. Discovery and per-resource apply failures are logged
@@ -288,7 +291,8 @@ skips the safety net entirely — a deliberate trade-off favouring low RSS over
 exhaustive API discovery.
 
 Each candidate is resolved (discovery cached per GVK) and deleted with
-`DeleteParams::default()`. Delete failures are logged, not fatal.
+foreground cascade (`DeleteParams::foreground()`): dependents are removed before
+their owners. Delete failures are logged, not fatal.
 
 `ResourceKey` (`group`, `version`, `kind`, `namespace`, `name`) is the stable
 identity used for all set operations; it is derived both from manifests and

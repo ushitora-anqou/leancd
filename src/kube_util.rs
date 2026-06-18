@@ -93,6 +93,15 @@ pub async fn list_all(
     Ok(list.items)
 }
 
+/// The [`DeleteParams`] leancd uses for every deletion: Foreground cascade
+/// (`propagationPolicy: Foreground`). An owner resource is held behind a
+/// `foregroundDeletion` finalizer until all of its dependents — resources
+/// carrying an `ownerReferences` entry pointing at it — are removed first,
+/// giving a predictable, dependent-first deletion order.
+fn delete_params() -> DeleteParams {
+    DeleteParams::foreground()
+}
+
 /// Delete a single resource by name.
 pub async fn delete(
     client: &Client,
@@ -103,7 +112,7 @@ pub async fn delete(
     name: &str,
 ) -> Result<()> {
     let api = api_for(client, ar, scope, namespace, default_namespace);
-    let _ = api.delete(name, &DeleteParams::default()).await?;
+    let _ = api.delete(name, &delete_params()).await?;
     Ok(())
 }
 
@@ -124,5 +133,32 @@ pub async fn get(
         Ok(obj) => Ok(Some(obj)),
         Err(kube::Error::Api(e)) if e.code == 404 => Ok(None),
         Err(e) => Err(Error::Kube(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kube::api::PropagationPolicy;
+
+    #[test]
+    fn delete_params_uses_foreground_cascade() {
+        let dp = delete_params();
+        assert_eq!(
+            dp.propagation_policy,
+            Some(PropagationPolicy::Foreground),
+            "leancd must cascade-delete in the foreground so an owner resource \
+             waits for its dependents to be removed first"
+        );
+    }
+
+    #[test]
+    fn delete_params_leaves_other_fields_default() {
+        // Foreground cascade does not imply dry-run, a grace-period override,
+        // or preconditions: only the propagation policy changes.
+        let dp = delete_params();
+        assert!(!dp.dry_run);
+        assert_eq!(dp.grace_period_seconds, None);
+        assert!(dp.preconditions.is_none());
     }
 }
