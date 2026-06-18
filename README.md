@@ -15,7 +15,9 @@ benchmark (see [bench/](bench/)).
 - Applies plain YAML manifests from Git (no Kustomize / Helm / Jsonnet).
 - Detects Git changes by polling (`git fetch`, shallow clone).
 - Detects cluster-side drift and re-applies the desired state.
-- Prunes resources removed from Git.
+- Prunes resources removed from Git, using **foreground cascade** deletion
+  (`propagationPolicy: Foreground`) so dependents are removed before their
+  owners — the same policy used for Helm-hook and full-teardown deletions.
 - Honours **Helm hooks** in pre-rendered manifests with Argo CD-equivalent
   semantics (`pre-install`/`pre-upgrade` → before the apply, `post-install`/
   `post-upgrade` → after; `pre-delete`/`post-delete` on full teardown), plus
@@ -130,13 +132,15 @@ make e2e        # kind cluster + in-cluster Forgejo + leancd
 The e2e suite spins up an ephemeral `kind` cluster and runs **Forgejo and
 leancd as in-cluster Pods** (leancd is built into a container image via the
 root [`Dockerfile`](Dockerfile) and loaded into the kind node). It drives
-leancd's intended behaviour end-to-end across ~26 scenarios: initial apply, Git
+leancd's intended behaviour end-to-end across ~35 scenarios: initial apply, Git
 change detection + steady-state drift-check, drift self-heal, prune, state
 ConfigMap, the `sync`/`status` CLI, OTLP metrics, cluster- and
 namespaced-scope resources, CRDs, the controller polling loop, HTTPS basic-auth
 and SSH-key Git access, error recovery, and **Helm hooks** — PreSync/PostSync
 Job/Pod execution and completion, hook weights, `hook-delete-policy`,
-pre/post-delete teardown, and `resource-policy: keep`.
+pre/post-delete teardown, `resource-policy: keep`, and **foreground cascade**
+deletion (the `foregroundDeletion` finalizer is observed across prune,
+teardown, and Helm-hook deletions).
 
 Every scenario is `#[ignore]`d (needs Docker + kind), so the suite stays out of
 `nix flake check` (no Docker in the sandbox) — the same status as `make bench`.

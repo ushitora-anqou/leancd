@@ -20,6 +20,41 @@ pub fn sync(args: &[String]) -> RunResult {
     exec_leancd("sync", args)
 }
 
+/// Launch `leancd sync [args]` on a background thread and return immediately.
+/// Used by scenarios that must act on a resource *while* the sync is in flight
+/// (e.g. parking a finalizer on a hook Pod before the hook completes and is
+/// deleted). Block on the result with [`SyncHandle::join`].
+pub fn sync_handle(args: Vec<String>) -> SyncHandle {
+    SyncHandle {
+        handle: Some(std::thread::spawn(move || exec_leancd("sync", &args))),
+    }
+}
+
+/// A background `leancd sync`. [`SyncHandle::join`] reaps the result; if dropped
+/// unjoined, `Drop` joins the thread so a sync never outlives its scenario.
+pub struct SyncHandle {
+    handle: Option<std::thread::JoinHandle<RunResult>>,
+}
+
+impl SyncHandle {
+    /// Block until the background sync finishes and return its result.
+    pub fn join(mut self) -> RunResult {
+        self.handle
+            .take()
+            .expect("sync handle already joined")
+            .join()
+            .unwrap_or_else(|e| panic!("background sync thread panicked: {e:?}"))
+    }
+}
+
+impl Drop for SyncHandle {
+    fn drop(&mut self) {
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
 /// Run `leancd status [args]` in the leancd Deployment.
 pub fn status(args: &[String]) -> RunResult {
     exec_leancd("status", args)

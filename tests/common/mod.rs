@@ -5,6 +5,7 @@
 //! added incrementally alongside the scenarios in `tests/e2e.rs`.
 
 pub mod env;
+pub mod fgdelete;
 pub mod fixture;
 pub mod forgejo;
 pub mod git;

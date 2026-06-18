@@ -1357,6 +1357,405 @@ async fn pss_restricted_deploy_pod() {
     );
 }
 
+// --- Foreground cascade deletion scenarios ---
+//
+// leancd deletes every resource with `DeleteParams::foreground()`. Foreground
+// cascade stamps a `foregroundDeletion` finalizer on the owner and removes its
+// dependents first; background deletion does neither. To prove foreground
+// deterministically (without racing the kind GC), each scenario parks a *stall*
+// finalizer on a dependent so the owner lingers behind `foregroundDeletion`,
+// which we assert on. Releasing the stall finalizer lets the cascade finish so
+// nothing litters the shared cluster.
+
+/// Scenario (fgdelete A): pruning a resource removed from Git uses foreground
+/// cascade. An unmanaged dependent ConfigMap (never in the applied set, so
+/// leancd never prunes it directly) carries an explicit ownerReference to the
+/// pruned owner and a stall finalizer; that holds the owner behind a
+/// `foregroundDeletion` finalizer — present only under foreground cascade.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn fgdelete_prune() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("fg-prune");
+    fj.create_repo(&env.repo, false);
+    let clone = common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "owner.yaml".into(),
+            manifests::configmap("fg-pr-owner", "default", &[("k", "v")]),
+        )],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    assert!(common::leancd::sync(&args).success);
+    assert!(common::kubectl::exists(
+        "default",
+        "configmap",
+        "fg-pr-owner"
+    ));
+
+    // Unmanaged dependent (no leancd label -> never pruned directly). Make it a
+    // dependent of the owner and stall it.
+    common::kubectl::apply_stdin(&manifests::configmap(
+        "fg-pr-child",
+        "default",
+        &[("k", "child")],
+    ));
+    common::fgdelete::link_owner(
+        "default",
+        "configmap",
+        "fg-pr-child",
+        "ConfigMap",
+        "fg-pr-owner",
+        "v1",
+    );
+    common::fgdelete::add_stall_finalizer("default", "configmap", "fg-pr-child");
+
+    // Remove the owner from Git; leancd prunes it in the foreground.
+    common::git::remove_and_push(&clone, fj, &env.repo, &["owner.yaml".to_string()]);
+    assert!(common::leancd::sync(&args).success);
+
+    assert!(
+        common::fgdelete::wait_for_foreground(
+            "default",
+            "configmap",
+            "fg-pr-owner",
+            Duration::from_secs(30),
+        ),
+        "owner must carry the foregroundDeletion finalizer (foreground cascade); \
+         background deletion removes it immediately with no finalizer"
+    );
+
+    // Release the dependent so the cascade completes and nothing lingers.
+    common::fgdelete::remove_stall_finalizer("default", "configmap", "fg-pr-child");
+    assert!(
+        common::wait::wait_for(
+            || !common::kubectl::exists("default", "configmap", "fg-pr-owner"),
+            Duration::from_secs(15),
+            Duration::from_millis(500),
+        ),
+        "owner must disappear once the dependent's stall finalizer is released"
+    );
+}
+
+/// Scenario (fgdelete B): a full teardown (main set emptied, a pre-delete hook
+/// kept) prunes every main resource in the foreground. Same dependent/stall
+/// technique as fgdelete A, exercised through the teardown path
+/// (pre-delete -> prune-all -> post-delete).
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn fgdelete_teardown() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("fg-teardown");
+    fj.create_repo(&env.repo, false);
+    let clone = common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "cm.yaml".into(),
+                manifests::configmap("fg-td-owner", "default", &[("k", "v")]),
+            ),
+            (
+                "pre.yaml".into(),
+                manifests::job_hook(
+                    "fg-td-pre",
+                    "default",
+                    "pre-delete",
+                    None,
+                    None,
+                    "echo pre-delete; exit 0",
+                ),
+            ),
+        ],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    assert!(common::leancd::sync(&args).success);
+    assert!(common::kubectl::exists(
+        "default",
+        "configmap",
+        "fg-td-owner"
+    ));
+    // pre-delete hook does NOT run on a normal (non-teardown) sync.
+    assert!(!common::kubectl::exists("default", "job", "fg-td-pre"));
+
+    common::kubectl::apply_stdin(&manifests::configmap(
+        "fg-td-child",
+        "default",
+        &[("k", "child")],
+    ));
+    common::fgdelete::link_owner(
+        "default",
+        "configmap",
+        "fg-td-child",
+        "ConfigMap",
+        "fg-td-owner",
+        "v1",
+    );
+    common::fgdelete::add_stall_finalizer("default", "configmap", "fg-td-child");
+
+    // Remove the main resource, keep the pre-delete hook -> full teardown.
+    common::git::remove_and_push(&clone, fj, &env.repo, &["cm.yaml".to_string()]);
+    assert!(common::leancd::sync(&args).success);
+
+    assert!(
+        common::fgdelete::wait_for_foreground(
+            "default",
+            "configmap",
+            "fg-td-owner",
+            Duration::from_secs(30),
+        ),
+        "owner must carry the foregroundDeletion finalizer when pruned during teardown"
+    );
+
+    common::fgdelete::remove_stall_finalizer("default", "configmap", "fg-td-child");
+    assert!(
+        common::wait::wait_for(
+            || !common::kubectl::exists("default", "configmap", "fg-td-owner"),
+            Duration::from_secs(15),
+            Duration::from_millis(500),
+        ),
+        "owner must disappear once the dependent's stall finalizer is released"
+    );
+}
+
+/// Scenario (fgdelete C): the `before-hook-creation` delete policy (the default)
+/// removes a prior hook instance in the foreground on the *next* sync. After the
+/// first sync leaves the hook Job and its Pod in place, we stall the Pod and
+/// re-sync: leancd deletes the old Job in the foreground (before applying the
+/// new one), so it lingers behind `foregroundDeletion` while the stalled Pod
+/// blocks it. We do not assert sync success: leancd does not wait for the
+/// foreground delete to finish before re-applying, so the re-apply may collide
+/// with the still-terminating Job (a before-hook-creation caveat unrelated to
+/// what we observe) — the delete has already fired in the foreground by then.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn fgdelete_hook_before_creation() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("fg-bhc");
+    fj.create_repo(&env.repo, false);
+    let clone = common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "pre.yaml".into(),
+                manifests::job_hook(
+                    "fg-bc-job",
+                    "default",
+                    "pre-install",
+                    None,
+                    None,
+                    "echo pre-sync; exit 0",
+                ),
+            ),
+            (
+                "cm.yaml".into(),
+                manifests::configmap("fg-bc-cm", "default", &[("k", "v")]),
+            ),
+        ],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    assert!(common::leancd::sync(&args).success);
+    assert!(common::kubectl::exists("default", "job", "fg-bc-job"));
+    let pod = common::kubectl::pod_name_by_selector("default", "job-name=fg-bc-job")
+        .expect("hook Job should have a Pod after the first sync");
+    common::fgdelete::add_stall_finalizer("default", "pod", &pod);
+
+    // Move HEAD so the next sync takes the full-apply path: a no-op second
+    // sync would drift-check and never re-run the PreSync hook, so
+    // before-hook-creation would not fire. Tweaking the main ConfigMap is
+    // enough to move HEAD.
+    common::git::push_more(
+        &clone,
+        fj,
+        &env.repo,
+        &[(
+            "cm.yaml".into(),
+            manifests::configmap("fg-bc-cm", "default", &[("k", "v2")]),
+        )],
+    );
+
+    // Second sync: before-hook-creation fires a foreground delete of the prior
+    // Job. Sync may report failure from the re-apply collision, but the delete
+    // has already happened in the foreground — which is what we observe.
+    let _ = common::leancd::sync(&args);
+
+    assert!(
+        common::fgdelete::wait_for_foreground(
+            "default",
+            "job",
+            "fg-bc-job",
+            Duration::from_secs(30),
+        ),
+        "hook Job must carry the foregroundDeletion finalizer (foreground cascade)"
+    );
+
+    common::fgdelete::remove_stall_finalizer("default", "pod", &pod);
+    assert!(
+        common::wait::wait_for(
+            || !common::kubectl::exists("default", "job", "fg-bc-job"),
+            Duration::from_secs(15),
+            Duration::from_millis(500),
+        ),
+        "hook Job must disappear once the Pod's stall finalizer is released"
+    );
+}
+
+/// Scenario (fgdelete D): the `hook-succeeded` delete policy removes a
+/// completed hook in the foreground, within the same sync that ran it. Because
+/// the delete fires the instant the hook completes, we run the sync in the
+/// background and park a stall finalizer on the hook Pod *while* it runs — the
+/// Job script sleeps long enough to make that window deterministic. Once the
+/// hook succeeds, leancd deletes the Job in the foreground; the stalled Pod
+/// blocks it, so the Job lingers behind `foregroundDeletion`.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn fgdelete_hook_succeeded() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("fg-hs");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "pre.yaml".into(),
+                manifests::job_hook(
+                    "fg-hs-job",
+                    "default",
+                    "pre-install",
+                    None,
+                    Some("hook-succeeded"),
+                    "sleep 60; exit 0",
+                ),
+            ),
+            (
+                "cm.yaml".into(),
+                manifests::configmap("fg-hs-cm", "default", &[("k", "v")]),
+            ),
+        ],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+
+    // Run sync in the background: the hook sleeps 60s, giving us time to stall
+    // its Pod before leancd deletes the completed Job.
+    let handle = common::leancd::sync_handle(args);
+    let found = common::wait::wait_for(
+        || common::kubectl::pod_name_by_selector("default", "job-name=fg-hs-job").is_some(),
+        Duration::from_secs(60),
+        Duration::from_millis(500),
+    );
+    assert!(found, "hook Job Pod should appear while the hook runs");
+    let pod = common::kubectl::pod_name_by_selector("default", "job-name=fg-hs-job")
+        .expect("hook Job Pod vanished before we could stall it");
+    common::fgdelete::add_stall_finalizer("default", "pod", &pod);
+
+    // Let the sync finish: hook succeeds -> hook-succeeded deletes the Job in
+    // the foreground. The stalled Pod keeps the Job behind foregroundDeletion.
+    let res = handle.join();
+    assert!(res.success, "sync failed: {}", res.stderr);
+
+    assert!(
+        common::fgdelete::wait_for_foreground(
+            "default",
+            "job",
+            "fg-hs-job",
+            Duration::from_secs(30),
+        ),
+        "hook Job must carry the foregroundDeletion finalizer (foreground cascade)"
+    );
+
+    common::fgdelete::remove_stall_finalizer("default", "pod", &pod);
+    assert!(
+        common::wait::wait_for(
+            || !common::kubectl::exists("default", "job", "fg-hs-job"),
+            Duration::from_secs(15),
+            Duration::from_millis(500),
+        ),
+        "hook Job must disappear once the Pod's stall finalizer is released"
+    );
+}
+
+/// Scenario (fgdelete E): the `hook-failed` delete policy removes a failed hook
+/// in the foreground, within the same sync — the mirror of fgdelete D with a
+/// non-zero hook exit. A PreSync failure aborts the pass (sync reports failure),
+/// but the hook-failed delete has already fired in the foreground, which is what
+/// we observe; we do not assert sync success.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn fgdelete_hook_failed() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("fg-hf");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "pre.yaml".into(),
+                manifests::job_hook(
+                    "fg-hf-job",
+                    "default",
+                    "pre-install",
+                    None,
+                    Some("hook-failed"),
+                    "sleep 60; exit 1",
+                ),
+            ),
+            (
+                "cm.yaml".into(),
+                manifests::configmap("fg-hf-cm", "default", &[("k", "v")]),
+            ),
+        ],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+
+    let handle = common::leancd::sync_handle(args);
+    let found = common::wait::wait_for(
+        || common::kubectl::pod_name_by_selector("default", "job-name=fg-hf-job").is_some(),
+        Duration::from_secs(60),
+        Duration::from_millis(500),
+    );
+    assert!(found, "hook Job Pod should appear while the hook runs");
+    let pod = common::kubectl::pod_name_by_selector("default", "job-name=fg-hf-job")
+        .expect("hook Job Pod vanished before we could stall it");
+    common::fgdelete::add_stall_finalizer("default", "pod", &pod);
+
+    // Let the sync finish: hook fails -> hook-failed deletes the Job in the
+    // foreground. The stalled Pod keeps the Job behind foregroundDeletion.
+    let res = handle.join();
+    eprintln!(
+        "fgdelete_hook_failed sync exit_code={} stderr={}",
+        res.exit_code, res.stderr
+    );
+
+    assert!(
+        common::fgdelete::wait_for_foreground(
+            "default",
+            "job",
+            "fg-hf-job",
+            Duration::from_secs(30),
+        ),
+        "hook Job must carry the foregroundDeletion finalizer (foreground cascade)"
+    );
+
+    common::fgdelete::remove_stall_finalizer("default", "pod", &pod);
+    assert!(
+        common::wait::wait_for(
+            || !common::kubectl::exists("default", "job", "fg-hf-job"),
+            Duration::from_secs(15),
+            Duration::from_millis(500),
+        ),
+        "hook Job must disappear once the Pod's stall finalizer is released"
+    );
+}
+
 /// Read the logs of a leancd-namespace controller Job.
 fn job_logs(name: &str) -> String {
     std::process::Command::new("kubectl")
