@@ -5,9 +5,12 @@ use std::process::Command;
 
 use crate::common::kubectl;
 
-/// Outcome of running a leancd subcommand via `kubectl exec`.
+/// Outcome of running a leancd subcommand via `kubectl exec`. `exit_code` is
+/// the process exit status (or -1 when kubectl did not report one); `leancd
+/// health` uses distinct codes (0=fresh, 1=never, 2=stale, 3=failing).
 pub struct RunResult {
     pub success: bool,
+    pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
 }
@@ -20,6 +23,13 @@ pub fn sync(args: &[String]) -> RunResult {
 /// Run `leancd status [args]` in the leancd Deployment.
 pub fn status(args: &[String]) -> RunResult {
     exec_leancd("status", args)
+}
+
+/// Run `leancd health [args]` in the leancd Deployment and return its exit
+/// code (0=fresh, 1=never, 2=stale, 3=failing). For liveness/readiness probe
+/// assertions; the Deployment's env (`LEANCD_NAMESPACE`) is inherited.
+pub fn health(args: &[String]) -> RunResult {
+    exec_leancd("health", args)
 }
 
 fn exec_leancd(sub: &str, args: &[String]) -> RunResult {
@@ -41,6 +51,7 @@ fn exec_leancd(sub: &str, args: &[String]) -> RunResult {
         .unwrap_or_else(|e| panic!("kubectl exec leancd {sub}: {e}"));
     RunResult {
         success: out.status.success(),
+        exit_code: out.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&out.stdout).to_string(),
         stderr: String::from_utf8_lossy(&out.stderr).to_string(),
     }
@@ -69,7 +80,7 @@ pub fn controller(name: &str, mut args: Vec<String>) -> ControllerHandle {
          kind: Job\n\
          metadata:\n  name: {name}\n  namespace: leancd\n\
          spec:\n  backoffLimit: 0\n  template:\n    spec:\n      \
-         serviceAccountName: leancd\n      restartPolicy: Never\n      \
+         terminationGracePeriodSeconds: 30\n      serviceAccountName: leancd\n      restartPolicy: Never\n      \
          containers:\n        - name: leancd\n          image: leancd:latest\n          \
          imagePullPolicy: IfNotPresent\n          args:\n{args_yaml}\n          \
          envFrom:\n            - secretRef:\n                name: leancd-git-credentials\n"
@@ -134,7 +145,7 @@ pub fn sync_ssh(name: &str, ssh_key: &str, args: &[String]) -> RunResult {
     let job = format!(
         "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: {name}\n  namespace: leancd\n\
          spec:\n  backoffLimit: 0\n  template:\n    spec:\n      \
-         serviceAccountName: leancd\n      restartPolicy: Never\n      \
+         terminationGracePeriodSeconds: 30\n      serviceAccountName: leancd\n      restartPolicy: Never\n      \
          containers:\n        - name: leancd\n          image: leancd:latest\n          \
          imagePullPolicy: IfNotPresent\n          args:\n{args_yaml}\n          \
          envFrom:\n            - secretRef:\n                name: {name}-key\n"
@@ -176,6 +187,9 @@ pub fn sync_ssh(name: &str, ssh_key: &str, args: &[String]) -> RunResult {
 
     RunResult {
         success: ok,
+        // The Job container's exit code is not captured separately here; derive
+        // a conventional 0/1 from succeeded/failed. (Not used by `health`.)
+        exit_code: if ok { 0 } else { 1 },
         stdout: logs,
         stderr: String::new(),
     }

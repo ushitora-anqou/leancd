@@ -100,3 +100,28 @@ pub fn apply_ssa(manifest: &str, field_manager: &str) {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+/// The first pod name in `ns` matching label `selector` (`kubectl get pods -l`),
+/// or `None` when no pod matches. Used to resolve the Pod behind a controller
+/// Job (`job-name=<job>`) or a Deployment (`app.kubernetes.io/name=<app>`).
+pub fn pod_name_by_selector(ns: &str, selector: &str) -> Option<String> {
+    let out = Command::new("kubectl")
+        .args([
+            "get",
+            "pods",
+            "-n",
+            ns,
+            "-l",
+            selector,
+            "-o",
+            "jsonpath={.items[0].metadata.name}",
+        ])
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}

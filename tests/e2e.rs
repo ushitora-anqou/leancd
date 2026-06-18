@@ -1109,3 +1109,265 @@ async fn weight_ordering_aborts_early() {
         low["status"]
     );
 }
+
+/// Scenario: a controller pointed at an unreachable repo fails every pass and
+/// backs off — the delay between attempts grows above the poll interval — while
+/// staying alive. The exact backoff curve (and the [0.75x, 1.0x) jitter) is
+/// unit-tested in `reconcile::tests`; here we assert the integration contract:
+/// the controller emits "backing off" across consecutive failures and keeps
+/// running rather than crashing.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn backoff_on_repeated_failures() {
+    common::Fixture::get();
+    let env = common::env::TestEnv::new("backoff");
+    // An unreachable repo URL: every reconcile fails (git fetch error).
+    let args =
+        env.sync_args("http://forgejo.forgejo.svc.cluster.local:3000/leancd/no-such-repo.git");
+    let _ctrl = common::leancd::controller("leancd-backoff", args);
+
+    // Wait until the controller logs at least two backoff lines (>=2 failed
+    // passes). Do not assert exact seconds: the delay is jittered and depends
+    // on clone latency.
+    let backed_off = common::wait::wait_for(
+        || job_logs("leancd-backoff").matches("backing off").count() >= 2,
+        Duration::from_secs(60),
+        Duration::from_millis(1000),
+    );
+    assert!(
+        backed_off,
+        "controller did not back off on repeated failures; logs:\n{}",
+        job_logs("leancd-backoff")
+    );
+
+    // The controller pod must still be Running (backs off, does not crash).
+    let phase = common::kubectl::get_json("leancd", "pod", &pod_for_job("leancd-backoff"))
+        ["status"]["phase"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert_eq!(
+        phase, "Running",
+        "controller should stay alive while backing off"
+    );
+}
+
+/// Scenario: a controller receiving SIGTERM (pod deletion) finishes its
+/// in-flight pass and exits 0 within the grace period — cooperative shutdown,
+/// not a mid-pass abort. `terminationGracePeriodSeconds: 30` on the controller
+/// Job wraps the `--shutdown-timeout-secs` default of 28s.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn graceful_shutdown_finishes_pass() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("graceful");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "cm.yaml".into(),
+            manifests::configmap("graceful-cm", "default", &[("k", "v")]),
+        )],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    let _ctrl = common::leancd::controller("leancd-graceful", args);
+
+    // Wait for the pod, then send SIGTERM by deleting it.
+    let started = common::wait::wait_for(
+        || common::kubectl::pod_name_by_selector("leancd", "job-name=leancd-graceful").is_some(),
+        Duration::from_secs(30),
+        Duration::from_millis(500),
+    );
+    assert!(started, "controller pod did not start");
+    let pod = common::kubectl::pod_name_by_selector("leancd", "job-name=leancd-graceful")
+        .expect("controller pod vanished");
+
+    // Wait for the first reconcile to finish: `shutdown_signal()` installs its
+    // SIGTERM handler in parallel with the loop right after spawning it, so
+    // once the first pass completes the handler is ready — sending SIGTERM
+    // earlier races handler installation and is dropped (PID 1 ignores
+    // unhandled SIGTERM).
+    let reconciled = common::wait::wait_for(
+        || job_logs("leancd-graceful").contains("reconciliation complete"),
+        Duration::from_secs(60),
+        Duration::from_millis(500),
+    );
+    assert!(
+        reconciled,
+        "controller did not finish its first reconcile; logs:\n{}",
+        job_logs("leancd-graceful")
+    );
+
+    // Send SIGTERM to leancd (PID 1) from inside the pod. Unlike `kubectl
+    // delete pod`, this leaves the pod object in place, so its Terminated
+    // status (exit code) stays readable (restartPolicy: Never keeps it).
+    let kill = std::process::Command::new("kubectl")
+        .args([
+            "exec",
+            "-n",
+            "leancd",
+            &pod,
+            "--",
+            "/bin/sh",
+            "-c",
+            "kill -TERM 1",
+        ])
+        .output();
+    assert!(
+        kill.as_ref().map(|o| o.status.success()).unwrap_or(false),
+        "kubectl exec kill -TERM 1 failed: {:?}",
+        kill.map(|o| String::from_utf8_lossy(&o.stderr).to_string())
+    );
+
+    // The pod reaches Terminated with leancd's exit code.
+    let terminated = common::wait::wait_for(
+        || {
+            !common::kubectl::get_json("leancd", "pod", &pod)["status"]["containerStatuses"][0]
+                ["state"]["terminated"]
+                .is_null()
+        },
+        Duration::from_secs(45),
+        Duration::from_millis(500),
+    );
+    assert!(terminated, "pod did not terminate after SIGTERM");
+
+    let st = common::kubectl::get_json("leancd", "pod", &pod)["status"]["containerStatuses"][0]
+        ["state"]["terminated"]
+        .clone();
+    assert_eq!(
+        st["exitCode"].as_i64(),
+        Some(0),
+        "graceful shutdown should exit 0: {st}"
+    );
+    assert_eq!(
+        st["reason"].as_str(),
+        Some("Completed"),
+        "terminated reason should be Completed: {st}"
+    );
+}
+
+/// Scenario: `leancd health` exit code tracks the sync lifecycle — never (1)
+/// before the first sync, fresh (0) after a successful sync, failing (3) after
+/// a sync that recorded an error.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn health_lifecycle() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("health");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "cm.yaml".into(),
+            manifests::configmap("health-cm", "default", &[("k", "v")]),
+        )],
+    );
+    let valid = env.sync_args(&fj.https_url(&env.repo));
+
+    // (1) No state yet -> never synced -> exit 1.
+    assert_eq!(
+        common::leancd::health(&valid).exit_code,
+        1,
+        "health should be 'never' before the first sync"
+    );
+
+    // (2) A successful sync -> fresh -> exit 0.
+    assert!(common::leancd::sync(&valid).success, "sync should succeed");
+    assert_eq!(
+        common::leancd::health(&valid).exit_code,
+        0,
+        "health should be 'fresh' after a successful sync"
+    );
+
+    // (3) A failed sync records last_error -> failing -> exit 3.
+    let unreachable =
+        env.sync_args("http://forgejo.forgejo.svc.cluster.local:3000/leancd/no-such-repo.git");
+    assert!(
+        !common::leancd::sync(&unreachable).success,
+        "sync of an unreachable repo should fail"
+    );
+    assert_eq!(
+        common::leancd::health(&valid).exit_code,
+        3,
+        "health should be 'failing' after a sync recorded an error"
+    );
+}
+
+/// Scenario: the harness leancd Deployment pod runs under Pod Security
+/// Standards "restricted" and is Running. Static assertions on the pod spec
+/// (every restricted field is already set in tests/leancd.yaml).
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn pss_restricted_deploy_pod() {
+    common::Fixture::get();
+    let found = common::wait::wait_for(
+        || {
+            common::kubectl::pod_name_by_selector("leancd", "app.kubernetes.io/name=leancd")
+                .is_some()
+        },
+        Duration::from_secs(30),
+        Duration::from_millis(500),
+    );
+    assert!(found, "deploy/leancd pod not found");
+    let pod = common::kubectl::pod_name_by_selector("leancd", "app.kubernetes.io/name=leancd")
+        .expect("deploy/leancd pod vanished");
+
+    let p = common::kubectl::get_json("leancd", "pod", &pod);
+    assert_eq!(
+        p["status"]["phase"].as_str(),
+        Some("Running"),
+        "deploy/leancd pod should be Running"
+    );
+
+    // Pod-level restricted security context.
+    assert_eq!(
+        p["spec"]["securityContext"]["runAsNonRoot"].as_bool(),
+        Some(true),
+        "runAsNonRoot must be true"
+    );
+    assert_eq!(
+        p["spec"]["securityContext"]["seccompProfile"]["type"].as_str(),
+        Some("RuntimeDefault"),
+        "seccompProfile must be RuntimeDefault"
+    );
+
+    // Container-level restricted security context.
+    let sc = &p["spec"]["containers"][0]["securityContext"];
+    assert_eq!(
+        sc["runAsUser"].as_i64(),
+        Some(65532),
+        "runAsUser must be 65532 (nonroot)"
+    );
+    assert_eq!(
+        sc["readOnlyRootFilesystem"].as_bool(),
+        Some(true),
+        "readOnlyRootFilesystem must be true"
+    );
+    let drops: Vec<&str> = sc["capabilities"]["drop"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        drops.contains(&"ALL"),
+        "capabilities.drop must contain ALL, got {drops:?}"
+    );
+}
+
+/// Read the logs of a leancd-namespace controller Job.
+fn job_logs(name: &str) -> String {
+    std::process::Command::new("kubectl")
+        .args(["logs", "-n", "leancd", &format!("job/{name}")])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default()
+}
+
+/// The pod name backing a leancd-namespace Job (panics if none).
+fn pod_for_job(job: &str) -> String {
+    common::kubectl::pod_name_by_selector("leancd", &format!("job-name={job}"))
+        .unwrap_or_else(|| panic!("no pod found for job {job}"))
+}
