@@ -404,7 +404,7 @@ fn jitter_factor(seed: u64) -> f64 {
     0.75 + 0.25 * frac
 }
 
-/// Scale `delay` by [`jitter_factor(seed)`], i.e. into `[0.75, 1.0)` of it.
+/// Scale `delay` by `jitter_factor(seed)`, i.e. into `[0.75, 1.0)` of it.
 /// Pure: no I/O.
 fn jittered(delay: Duration, seed: u64) -> Duration {
     delay.mul_f64(jitter_factor(seed))
