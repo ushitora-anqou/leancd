@@ -1,5 +1,29 @@
 [licenses]
-# The dependency graph (kube-rs, tokio, hyper, ...) transitively pulls in these
-# permissive licenses. All are OSI-approved and compatible with the project's
-# Apache-2.0 license.
-allow = ["MIT", "Apache-2.0", "BSD-3-Clause", "BSL-1.0", "ISC", "Unicode-3.0"]
+# The project is distributed under Apache-2.0. Any dependency license that is
+# compatible with Apache-2.0 — i.e. a permissive license, or MPL-2.0 whose
+# file-level copyleft still allows the combined work to stay Apache-2.0 — is
+# permitted here. Strong copyleft (GPL/LGPL/AGPL) is intentionally excluded:
+# pulling it in would force the whole work under that license.
+# cargo-deny denies every license by default, so each allowed SPDX id must be
+# listed explicitly (the copyleft/allow-osi-fsf-free category flags were
+# removed in current cargo-deny).
+allow = [
+  "0BSD",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "CC0-1.0",
+  "ISC",
+  "MIT",
+  "MPL-2.0",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Unlicense",
+  "Zlib",
+]
+# This is an intentional predictive allow list (any Apache-2.0-compatible
+# license), so silence the "license allowed but not encountered" warnings for
+# licenses that no current dependency happens to use.
+unused-allowed-license = "allow"

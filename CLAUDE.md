@@ -34,7 +34,7 @@ make test                      # == nix flake check : full CI (fmt, clippy -D wa
                                #   nextest, cargo-deny, cargo-audit)
 ```
 
-The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provides the toolchain, plus `curl`, `kind`, `kubectl` in the dev shell. `make test` runs the complete CI gate (clippy denies warnings, `cargo-deny` allows permissive licenses only — MIT/Apache-2.0/BSD-3-Clause/BSL-1.0/ISC/Unicode-3.0; see `deny.toml`).
+The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provides the toolchain, plus `curl`, `kind`, `kubectl` in the dev shell. `make test` runs the complete CI gate (clippy denies warnings, `cargo-deny` allows any license compatible with the project's Apache-2.0 — permissive licenses plus MPL-2.0, strong copyleft excluded; see `deny.toml`).
 
 **RSS benchmark** (`make bench` / `./bench/bench.sh`): spins up a `kind` cluster, generates N namespaces × Deployment/StatefulSet/ConfigMap/Service into a local Git repo, runs a release build of leancd against it, and samples two footprints in parallel: the **self** RSS (leancd's own process, read via `ps`) and the **tree** RSS (leancd + git/ssh subprocesses, summed via `ps` — shared pages double-counted, so deliberately conservative). It fails if any of the self/tree peak/idle RSS ≥ the budget. Tunables: `BENCH_NAMESPACE_COUNT` (default 15), `RSS_BUDGET_MIB` (default 100), `BENCH_SAMPLE_SECS` (default 30), `KIND_CLUSTER_NAME`.
 
@@ -89,5 +89,5 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 ## Conventions when editing
 
 - Match the existing style: module-level `//!` doc comments, `tracing` structured logs (`tracing::warn!`/`info!` with `error = %e`), `crate::error::{Error, Result}` (thiserror enum) rather than `anyhow` in library code (`anyhow` is only at `main`'s top level).
-- Keep new dependencies minimal — remember `cargo-deny` allows MIT only. Evaluate any added dependency against the RSS budget first.
+- Keep new dependencies minimal — remember `cargo-deny` only allows Apache-2.0-compatible licenses (see `deny.toml`). Evaluate any added dependency against the RSS budget first.
 - When changing kube interaction code, confirm it issues direct API calls and builds no cache.
