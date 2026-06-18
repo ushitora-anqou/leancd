@@ -9,7 +9,7 @@ use crate::error::Result;
 
 /// Lean CD — a minimal, low-memory Kubernetes CD controller.
 #[derive(Debug, Parser)]
-#[command(name = "leancd", version, about)]
+#[command(name = "leancd", version = crate::version::FULL_VERSION, about)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -23,6 +23,8 @@ pub enum Command {
     Sync(CommonArgs),
     /// Print the last known sync state.
     Status(CommonArgs),
+    /// Check sync health and exit (for liveness/readiness exec probes).
+    Health(CommonArgs),
 }
 
 /// Flags shared by all subcommands. These fully configure a single
@@ -88,6 +90,27 @@ pub struct CommonArgs {
     /// not reach a terminal state within this window is treated as failed.
     #[arg(long, env = "LEANCD_HOOK_TIMEOUT_SECS", default_value = "300")]
     pub hook_timeout_secs: u64,
+
+    /// Base delay for exponential backoff after a failed reconciliation pass
+    /// (e.g. `5s`). The delay doubles each consecutive failure, capped at
+    /// `--backoff-max`, and resets to the poll interval on success.
+    #[arg(long, env = "LEANCD_BACKOFF_BASE", default_value = "5s")]
+    pub backoff_base: String,
+
+    /// Maximum backoff delay between retries (e.g. `10m`).
+    #[arg(long, env = "LEANCD_BACKOFF_MAX", default_value = "10m")]
+    pub backoff_max: String,
+
+    /// Seconds to wait for an in-flight reconciliation pass to finish on
+    /// shutdown before force-aborting it. Must fit within the Pod's
+    /// `terminationGracePeriodSeconds`.
+    #[arg(long, env = "LEANCD_SHUTDOWN_TIMEOUT_SECS", default_value = "28")]
+    pub shutdown_timeout_secs: u64,
+
+    /// A sync is reported stale by `leancd health` when the last successful
+    /// sync is older than `poll_interval` times this factor.
+    #[arg(long, env = "LEANCD_HEALTH_STALE_FACTOR", default_value = "10")]
+    pub health_stale_factor: u32,
 }
 
 impl CommonArgs {
@@ -113,6 +136,10 @@ impl CommonArgs {
             managed_label_value: self.managed_label_value.clone(),
             field_manager: self.field_manager.clone(),
             hook_timeout: Duration::from_secs(self.hook_timeout_secs),
+            backoff_base: parse_duration(&self.backoff_base)?,
+            backoff_max: parse_duration(&self.backoff_max)?,
+            shutdown_timeout: Duration::from_secs(self.shutdown_timeout_secs),
+            health_stale_factor: self.health_stale_factor,
         })
     }
 }
@@ -137,6 +164,10 @@ mod tests {
             managed_label_value: "leancd".into(),
             field_manager: "leancd".into(),
             hook_timeout_secs: hook_secs,
+            backoff_base: "5s".into(),
+            backoff_max: "10m".into(),
+            shutdown_timeout_secs: 28,
+            health_stale_factor: 10,
         }
     }
 

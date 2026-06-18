@@ -4,7 +4,9 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use kube::client::Client;
 
@@ -22,6 +24,9 @@ pub struct Reconciler {
     pub client: Client,
     pub cfg: Config,
     pub metrics: Arc<Metrics>,
+    /// Cooperative shutdown flag: the loop checks it between passes (and
+    /// short-circuits the inter-pass sleep) and exits cleanly when it is set.
+    pub stop: Arc<AtomicBool>,
 }
 
 impl Reconciler {
@@ -279,14 +284,61 @@ impl Reconciler {
         outcome
     }
 
-    /// Run reconciliation forever on the configured poll interval. Designed to
-    /// be spawned and aborted for shutdown.
+    /// Run reconciliation forever on the configured poll interval, backing off
+    /// on consecutive failures and stopping cooperatively when [`Self::stop`]
+    /// is set. An in-flight pass always finishes before the loop re-checks the
+    /// flag, so callers can `await` the handle for a graceful shutdown and fall
+    /// back to `abort()` after a timeout.
     pub async fn run_loop(&self) -> Result<()> {
+        let mut consecutive_failures: u32 = 0;
         loop {
-            if let Err(e) = self.run_once().await {
-                tracing::error!(error = %e, "reconciliation failed");
+            if self.stop.load(Ordering::Acquire) {
+                tracing::info!("shutdown requested; exiting reconciliation loop");
+                break;
             }
-            tokio::time::sleep(self.cfg.poll_interval).await;
+
+            let result = self.run_once().await;
+            match result {
+                Ok(()) => consecutive_failures = 0,
+                Err(e) => {
+                    tracing::error!(error = %e, "reconciliation failed");
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                }
+            }
+
+            let delay = next_delay(
+                consecutive_failures,
+                self.cfg.backoff_base,
+                self.cfg.backoff_max,
+                self.cfg.poll_interval,
+            );
+            if consecutive_failures > 0 {
+                tracing::warn!(
+                    consecutive_failures,
+                    backoff_secs = delay.as_secs(),
+                    "backing off before next reconciliation"
+                );
+            }
+
+            // Sleep, but wake immediately if shutdown is requested so a signal
+            // during the idle interval does not wait for the full delay.
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {}
+                _ = self.watch_stop() => {
+                    tracing::info!("shutdown requested during sleep; exiting");
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve once [`Self::stop`] is set. Used to short-circuit the inter-pass
+    /// sleep on shutdown; polled on a short interval because the flag is set at
+    /// most once (at termination), so no notification primitive is needed.
+    async fn watch_stop(&self) {
+        while !self.stop.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
     }
 }
@@ -296,6 +348,37 @@ impl Reconciler {
 /// the Git HEAD moved. Pure: no API calls.
 fn should_full_apply(has_prev: bool, changed: bool) -> bool {
     !has_prev || changed
+}
+
+/// Delay before the next reconciliation attempt after `consecutive_failures`
+/// failures, using exponential backoff with a cap: failures=1 -> `base`, =2 ->
+/// `2*base`, =3 -> `4*base`, ... capped at `cap`. `consecutive_failures == 0`
+/// yields a zero delay (a success resets the backoff). Pure: no I/O.
+fn backoff_delay(base: Duration, cap: Duration, consecutive_failures: u32) -> Duration {
+    if consecutive_failures == 0 {
+        return Duration::ZERO;
+    }
+    // failures=1 -> base, =2 -> 2*base, =3 -> 4*base, ..., capped at `cap`.
+    // The exponent is clamped to avoid shift overflow; `checked_mul` falls
+    // back to the cap on overflow.
+    let exp = consecutive_failures.saturating_sub(1).min(31);
+    let factor: u32 = 1u32 << exp;
+    base.checked_mul(factor).unwrap_or(cap).min(cap)
+}
+
+/// Delay before the next reconciliation pass: `poll_interval` after a success
+/// (failures == 0), otherwise the exponential [`backoff_delay`].
+fn next_delay(
+    consecutive_failures: u32,
+    base: Duration,
+    cap: Duration,
+    poll: Duration,
+) -> Duration {
+    if consecutive_failures == 0 {
+        poll
+    } else {
+        backoff_delay(base, cap, consecutive_failures)
+    }
 }
 
 fn now_epoch() -> u64 {
@@ -328,5 +411,52 @@ mod tests {
         // The only combination that skips full apply: has prior state, no Git
         // change -> the drift-check path.
         assert!(!should_full_apply(true, false));
+    }
+
+    #[test]
+    fn backoff_delay_zero_after_success() {
+        assert_eq!(
+            backoff_delay(Duration::from_secs(5), Duration::from_secs(600), 0),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
+    fn backoff_delay_exponential() {
+        let base = Duration::from_secs(5);
+        let cap = Duration::from_secs(600);
+        assert_eq!(backoff_delay(base, cap, 1), Duration::from_secs(5));
+        assert_eq!(backoff_delay(base, cap, 2), Duration::from_secs(10));
+        assert_eq!(backoff_delay(base, cap, 3), Duration::from_secs(20));
+        assert_eq!(backoff_delay(base, cap, 4), Duration::from_secs(40));
+    }
+
+    #[test]
+    fn backoff_delay_capped() {
+        let base = Duration::from_secs(5);
+        let cap = Duration::from_secs(600);
+        // 2^7 * 5s = 640s > 600s cap.
+        assert_eq!(backoff_delay(base, cap, 8), cap);
+        // A large failure count stays pinned at the cap.
+        assert_eq!(backoff_delay(base, cap, 100), cap);
+    }
+
+    #[test]
+    fn next_delay_uses_poll_after_success() {
+        let poll = Duration::from_secs(60);
+        assert_eq!(
+            next_delay(0, Duration::from_secs(5), Duration::from_secs(600), poll),
+            poll
+        );
+    }
+
+    #[test]
+    fn next_delay_uses_backoff_after_failure() {
+        let poll = Duration::from_secs(60);
+        // 1 failure -> backoff base (5s), not poll (60s).
+        assert_eq!(
+            next_delay(1, Duration::from_secs(5), Duration::from_secs(600), poll),
+            Duration::from_secs(5)
+        );
     }
 }

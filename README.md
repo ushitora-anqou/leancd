@@ -1,5 +1,7 @@
 # leancd
 
+[![CI](https://github.com/ushitora-anqou/leancd/actions/workflows/ci.yml/badge.svg)](https://github.com/ushitora-anqou/leancd/actions/workflows/ci.yml)
+
 **Lean CD** is a minimal, low-memory Continuous Delivery controller for
 Kubernetes. It syncs manifests from a Git repository into the cluster it runs
 in, detects drift, and self-heals — like Argo CD or Flux CD, but with a hard
@@ -20,6 +22,10 @@ benchmark (see [bench/](bench/)).
   `helm.sh/hook-weight`, `helm.sh/hook-delete-policy`, and
   `helm.sh/resource-policy: keep`. Job/Pod hooks are awaited to completion.
 - CLI for manual sync and status. Server-side apply always claims conflicting fields.
+- Backs off exponentially on consecutive sync failures and shuts down gracefully
+  (finishing the in-flight pass on SIGTERM); `SIGHUP` reloads `RUST_LOG`.
+- `leancd health` subcommand for `exec` liveness/readiness probes.
+- `leancd --version` and the startup log report the embedded git SHA.
 - Metrics exported over OTLP/HTTP (push), including `leancd_rss_bytes`.
 - Handles **all** resource kinds, including CRDs and cluster-scoped resources.
 
@@ -77,6 +83,13 @@ The manifest installs the Namespace, ServiceAccount, RBAC, and Deployment, and
 points leancd at your OpenTelemetry Collector over OTLP/HTTP (leancd runs no
 HTTP listener of its own). Edit the `LEANCD_*` env values for your repository,
 and create the `leancd-git-credentials` Secret for private repos.
+
+A prebuilt multi-arch image is published to GHCR on each `v*` tag — set
+`image:` to `ghcr.io/ushitora-anqou/leancd:<tag>` (or `:latest`) instead of the
+local `leancd:latest` (see [doc/release.md](doc/release.md)). For a tighter
+production posture, [`deploy/leancd-namespaced.yaml`](deploy/leancd-namespaced.yaml)
+binds leancd's permissions to selected namespaces (RoleBindings) and ships a
+default-deny `NetworkPolicy`.
 
 For a hands-on walkthrough deploying leancd into a local `kind` cluster
 (including an optional in-cluster Forgejo Git server), see

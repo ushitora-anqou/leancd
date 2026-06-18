@@ -82,8 +82,11 @@ single-threaded async runtime — to avoid per-thread stack memory.
 `tracing_subscriber` is initialised from
 `RUST_LOG` (default `info`). In `controller`, the reconciliation loop is spawned
 as one task and the OTel meter provider is initialised; on `SIGINT` or `SIGTERM`
-(`shutdown_signal`) the loop task is `abort()`-ed and the meter provider is
-`shutdown()` to flush a final export before the process exits.
+(`shutdown_signal`) a cooperative `stop` flag is set, the in-flight pass is
+allowed to finish (the loop checks the flag between passes and short-circuits
+its inter-pass sleep), and the meter provider is `shutdown()` to flush a final
+export. If a pass does not finish within `shutdown_timeout`, the task is
+`abort()`-ed as a fallback. `SIGHUP` reloads the `EnvFilter` from `RUST_LOG`.
 
 `sync` and `status` are fire-and-forget: they construct a `Reconciler` (or just
 a `Client` for `status`), do one pass, and return. `sync` also builds a meter
@@ -353,7 +356,10 @@ footprint at collection time.
   stopping errors; `run_once` records `last_error` and increments
   `sync_errors` on failure. Per-resource apply/prune/drift failures are `warn!`-
   logged and the pass continues. The controller loop never exits on a pass
-  error — it logs and sleeps until the next tick.
+  error — it logs and backs off: a failing pass waits an exponential
+  `backoff_delay` (`backoff_base`·2ⁿ, capped at `backoff_max`) before the next
+  attempt, resetting to `poll_interval` on success. Shutdown is cooperative (see
+  [§3](#3-the-single-binary-and-its-three-subcommands)).
 - **`main`'s top-level errors** use `anyhow` (exit non-zero); library code uses
   `crate::error::{Error, Result}` (a `thiserror` enum).
 

@@ -77,6 +77,11 @@ spec:
         app.kubernetes.io/name: leancd
     spec:
       serviceAccountName: leancd
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: leancd
           image: leancd:latest
@@ -106,6 +111,32 @@ spec:
             - secretRef:
                 name: leancd-git-credentials
                 optional: true
+          # Pod Security Standards "restricted": non-root, no privilege
+          # escalation, all capabilities dropped, read-only root filesystem.
+          # /tmp is an emptyDir so the shallow checkout and SSH-key temp file
+          # stay writable under a read-only root.
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # `leancd health` exec probe: exit 0=fresh, 1=never, 2=stale, 3=failing.
+          livenessProbe:
+            exec:
+              command: ["leancd", "health"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["leancd", "health"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
           resources:
             # RSS stays under 100MiB (see bench/); the limit leaves headroom.
             limits:
@@ -114,3 +145,6 @@ spec:
             requests:
               memory: 32Mi
               cpu: 50m
+      volumes:
+        - name: tmp
+          emptyDir: {}

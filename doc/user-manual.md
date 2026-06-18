@@ -141,7 +141,7 @@ two for HTTPS and SSH transports). The entrypoint is `leancd`.
 
 ## 4. Subcommands
 
-leancd has three subcommands. All flags in [§5](#5-configuration-reference) are
+leancd has four subcommands. All flags in [§5](#5-configuration-reference) are
 accepted by every subcommand (they share `CommonArgs`); flags that only matter
 for `controller` are noted there.
 
@@ -154,8 +154,13 @@ reconciles on `<poll-interval>` forever. **Deploy this** as a `Deployment`.
 leancd controller --repo-url https://github.com/org/manifests.git
 ```
 
-On `SIGINT`/`SIGTERM` it aborts the reconcile loop and flushes the OTel meter
-provider (one final export), then exits.
+On `SIGINT`/`SIGTERM` it stops **cooperatively**: the in-flight reconciliation
+pass finishes, then the loop exits and the OTel meter provider is flushed (one
+final export). If a pass does not finish within `--shutdown-timeout-secs`, the
+task is force-aborted as a fallback so Pod termination is not blocked. A
+failing pass is retried after an exponential backoff (`--backoff-base`/
+`--backoff-max`), reset to `--poll-interval` on success. `SIGHUP` reloads the
+log filter from `RUST_LOG` without restarting.
 
 ### `leancd sync`
 
@@ -193,6 +198,25 @@ leancd status (default/leancd-state)
 
 If no state is recorded yet it prints `no sync state recorded yet`.
 
+### `leancd health`
+
+Read-only health check for liveness/readiness `exec` probes: reads the state
+ConfigMap and classifies the last sync. Exits with:
+
+| Code | Meaning |
+|---|---|
+| `0` | fresh — last sync recent (within `poll_interval × --health-stale-factor`) and no error |
+| `1` | never — no state recorded yet (e.g. before the first sync) |
+| `2` | stale — last sync older than the staleness threshold |
+| `3` | failing — the last sync recorded an error (takes priority over staleness) |
+
+```sh
+leancd health                         # exit code reflects sync health
+```
+
+It exposes no HTTP listener — wire it to a Deployment `livenessProbe`/
+`readinessProbe` as `exec: [leancd, health]` (see `deploy/leancd.yaml`).
+
 ## 5. Configuration reference
 
 ### 5.1 Flags and environment variables
@@ -215,6 +239,10 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 | `--managed-label-value` | — | `leancd` | all | managed-by label value |
 | `--field-manager` | — | `leancd` | all | SSA field manager name |
 | `--hook-timeout-secs` | `LEANCD_HOOK_TIMEOUT_SECS` | `300` | all | per-hook (Job/Pod) completion timeout before it is treated as failed (see [Helm hooks](#helm-hooks)) |
+| `--backoff-base` | `LEANCD_BACKOFF_BASE` | `5s` | controller | base delay for exponential backoff on consecutive sync failures (see [§5.2](#52-duration-parser)) |
+| `--backoff-max` | `LEANCD_BACKOFF_MAX` | `10m` | controller | maximum backoff delay (cap); resets to `--poll-interval` on success |
+| `--shutdown-timeout-secs` | `LEANCD_SHUTDOWN_TIMEOUT_SECS` | `28` | controller | grace period for the in-flight pass to finish before force-abort on shutdown (keep ≤ Pod `terminationGracePeriodSeconds`) |
+| `--health-stale-factor` | `LEANCD_HEALTH_STALE_FACTOR` | `10` | all | `leancd health` reports stale when the last sync is older than `poll_interval × this` |
 
 `--poll-interval` and `--git-*-env` are accepted by all subcommands (they are
 part of `CommonArgs`) but only `controller` uses `--poll-interval` in a
@@ -373,6 +401,65 @@ rate(leancd_sync_errors_total[5m]) / rate(leancd_sync_total[5m])
 # Currently-drifting resources by kind
 sum by (kind) (leancd_drift_detected)
 ```
+
+### 7.1 Getting metrics into Prometheus
+
+leancd only pushes OTLP/HTTP and exposes no scrape endpoint. There are two ways
+to land the metrics in Prometheus — pick one, no leancd change is needed.
+
+**A. OTel Collector → Prometheus exporter (works with any Prometheus).** Run a
+collector whose OTLP/HTTP receiver accepts leancd's push and whose Prometheus
+exporter exposes `/metrics` for Prometheus to scrape:
+
+```yaml
+# otel-collector-config.yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      exporters: [prometheus]
+```
+
+Then scrape the collector's exporter (`otel-collector:8889`) with a `ServiceMonitor`
+or a static `scrape_config`. This is the path the e2e suite uses
+(`tests/leancd.yaml`).
+
+**B. Prometheus ≥ 3.0 native OTLP receiver (no collector).** Prometheus 3.x can
+ingest OTLP directly. Enable it with a startup flag and an `otlp:` block, then
+point leancd at the Prometheus OTLP endpoint:
+
+```yaml
+# prometheus.yml (Prometheus ≥ 3.0) — root-level block, not under scrape_configs
+otlp:
+  promote_resource_attributes:
+    - service.name
+```
+
+```sh
+prometheus --web.enable-otlp-receiver --config.file=prometheus.yml
+```
+
+The receiver listens on `/api/v1/otlp/v1/metrics`; set leancd's endpoint to the
+`/api/v1/otlp` prefix so the SDK appends the standard `/v1/metrics` path:
+
+```sh
+LEANCD_...  # controller flags
+OTEL_EXPORTER_OTLP_ENDPOINT=http://prometheus:9090/api/v1/otlp
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+```
+
+See the [Prometheus OpenTelemetry guide](https://prometheus.io/docs/guides/opentelemetry/)
+for the full `otlp:` block and resource-attribute promotion.
 
 ## 8. Tuning
 

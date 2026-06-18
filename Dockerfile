@@ -3,10 +3,15 @@
 # Builder: compile leancd in release mode.
 FROM rust:1-bookworm AS builder
 WORKDIR /app
+# Accept the git SHA so build.rs embeds it even though `.git` is excluded from
+# the build context. Pass with: docker build --build-arg GIT_SHA=$(git rev-parse
+# --short=8 HEAD) . Defaults to `unknown` (the build.rs fallback).
+ARG GIT_SHA=unknown
+ENV LEANC_BUILD_GIT_SHA=${GIT_SHA}
 
 # Cache dependencies separately: copy only the manifests and build a throwaway
 # binary so the dependency layer is reused unless Cargo.toml/Cargo.lock change.
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 RUN mkdir src && echo 'fn main() {}' > src/main.rs \
     && cargo build --release \
     && rm -rf src

@@ -51,6 +51,20 @@ pub struct Config {
     /// Maximum time to wait for a Helm hook (Job/Pod) to reach a terminal
     /// state before treating it as failed.
     pub hook_timeout: std::time::Duration,
+
+    /// Base delay for exponential backoff after a failed reconciliation pass.
+    /// The first retry waits `backoff_base`, then `2*backoff_base`, and so on,
+    /// capped at `backoff_max`. A successful pass resets the backoff to zero.
+    pub backoff_base: std::time::Duration,
+    /// Maximum (cap) backoff delay between retries after repeated failures.
+    pub backoff_max: std::time::Duration,
+    /// Grace period to let an in-flight reconciliation pass finish on shutdown
+    /// before force-aborting the task.
+    pub shutdown_timeout: std::time::Duration,
+
+    /// A sync is considered stale for health checks when the last successful
+    /// sync is older than `poll_interval * health_stale_factor`.
+    pub health_stale_factor: u32,
 }
 
 impl Config {
@@ -234,6 +248,10 @@ mod tests {
             managed_label_value: "leancd".into(),
             field_manager: "leancd".into(),
             hook_timeout: std::time::Duration::from_secs(300),
+            backoff_base: std::time::Duration::from_secs(5),
+            backoff_max: std::time::Duration::from_secs(600),
+            shutdown_timeout: std::time::Duration::from_secs(28),
+            health_stale_factor: 10,
         }
     }
 

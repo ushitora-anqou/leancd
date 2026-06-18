@@ -1,0 +1,48 @@
+# Continuous integration: the same gate as `make test` (nix flake check) but
+# runnable on any push/PR without a Nix dependency. Mirrors fmt + clippy
+# (-D warnings) + tests + cargo-deny (license/supply-chain) + cargo-audit
+# (advisories). The RSS benchmark (make bench) and e2e suite (make e2e) need a
+# kind cluster and Docker, so they stay out of CI — run them externally.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache target/
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        # nextest if available, else fall back to cargo test.
+        run: cargo nextest run --workspace || cargo test --workspace
+
+      - name: cargo-deny (licenses + supply chain)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          arguments: --workspace
+
+      - name: cargo-audit (security advisories)
+        uses: rustsec/audit-check@v2.0.0

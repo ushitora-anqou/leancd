@@ -156,6 +156,11 @@ spec:
         app.kubernetes.io/name: leancd
     spec:
       serviceAccountName: leancd
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: leancd
           image: leancd:latest
@@ -185,3 +190,27 @@ spec:
           envFrom:
             - secretRef:
                 name: leancd-git-credentials
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            exec:
+              command: ["leancd", "health"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["leancd", "health"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
