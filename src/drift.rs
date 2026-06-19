@@ -120,8 +120,14 @@ pub fn find_live_match<'a>(
 /// parks them) is often `None` on `List`, so they are an unreliable comparison
 /// key and would make every spec-less resource drift forever.
 pub fn specs_differ(git: &Value, live: &Value) -> bool {
-    let git = strip_type_fields(git);
-    let live = strip_type_fields(live);
+    // Strip `stringData` before comparing: k8s converts Secret `stringData`
+    // → base64 `data` on apply, so Git carries stringData while live carries
+    // data, and a raw comparison would drift forever. Only `data` (and the
+    // rest) is compared, tolerating either side holding what the other stores
+    // under the opposite key. (BUG 9.) Only Secrets use `stringData`, so this
+    // is a no-op for other kinds.
+    let git = strip_type_fields(&strip_secret_string_data(git));
+    let live = strip_type_fields(&strip_secret_string_data(live));
     let git_spec = git.get("spec");
     let live_spec = live.get("spec");
     match (git_spec, live_spec) {
@@ -131,6 +137,17 @@ pub fn specs_differ(git: &Value, live: &Value) -> bool {
         // so label/annotation drift on spec-less resources is still caught.
         (None, _) => !spec_subset(&git, &live),
     }
+}
+
+/// Return a copy of `v` with a top-level `stringData` field removed (see
+/// [`specs_differ`]).
+fn strip_secret_string_data(v: &Value) -> Value {
+    let mut obj = match v.as_object() {
+        Some(o) => o.clone(),
+        None => return v.clone(),
+    };
+    obj.remove("stringData");
+    Value::Object(obj)
 }
 
 /// Return a copy of `v` with `apiVersion` and `kind` removed (top level only).
@@ -144,14 +161,37 @@ fn strip_type_fields(v: &Value) -> Value {
     Value::Object(obj)
 }
 
+/// True for k8s field values the API server elides (omits from responses)
+/// because they are the type's zero value: boolean `false`, `null`, empty
+/// slices `[]`, and the number `0` (int32/float fields with omitempty, e.g.
+/// `livenessProbe.initialDelaySeconds: 0`). An explicit zero value in Git
+/// therefore compares equal to the field being absent in live. Other zeroes —
+/// `""`, `{}` — are NOT elided by k8s and are not treated as zero here. Note
+/// `replicas: 0` is unaffected: when live carries the key the scalar compare
+/// still runs (`0 != 1` is drift). (BUG 9.)
+fn is_k8s_zero_value(v: &Value) -> bool {
+    matches!(v, Value::Bool(false) | Value::Null)
+        || v.as_array().is_some_and(|a| a.is_empty())
+        || v.as_f64().is_some_and(|n| n == 0.0)
+}
+
 /// Recursive subset check: `git` is satisfied by `live` when every key in `git`
 /// is present and recursively satisfied in `live`. Extra keys in `live` (server
 /// defaults) are tolerated.
 fn spec_subset(git: &Value, live: &Value) -> bool {
     match (git, live) {
-        (Value::Object(g), Value::Object(l)) => g
-            .iter()
-            .all(|(k, v)| l.get(k).is_some_and(|lv| spec_subset(v, lv))),
+        (Value::Object(g), Value::Object(l)) => g.iter().all(|(k, v)| {
+            // k8s omits zero-value fields — booleans (`hostNetwork`, `hostPID`,
+            // `privileged`, …) and empty slices (`httpGet.httpHeaders: []`,
+            // `env: []`, …). An explicit zero value in Git is equivalent to
+            // the field being absent in live, so don't flag drift over a
+            // server-elided zero value. Only `false`/`[]` — non-zero values
+            // are always meaningful and must be present in live. (BUG 9.)
+            if is_k8s_zero_value(v) && !l.contains_key(k) {
+                return true;
+            }
+            l.get(k).is_some_and(|lv| spec_subset(v, lv))
+        }),
         // Arrays: index-aligned recursive subset. leancd applies the array
         // itself via SSA, so live preserves Git's element order; extra trailing
         // live elements (server-injected defaults) are tolerated, and each Git
@@ -187,6 +227,76 @@ mod tests {
         let git = json!({"replicas": 1, "selector": {}});
         let live = json!({"replicas": 1});
         assert!(!spec_subset(&git, &live));
+    }
+
+    #[test]
+    fn subset_tolerates_git_false_vs_live_omitted() {
+        // k8s omits zero-value bool fields (hostNetwork, hostPID, privileged,
+        // …). An explicit `false` in Git is equivalent to the field being
+        // absent in live, so it must not read as drift. (BUG 9: the KSM
+        // Deployment carries `hostNetwork: false`; the server omits it, and
+        // every drift pass re-applied the Deployment forever.)
+        let git = json!({"hostNetwork": false, "containers": [{"name": "c", "image": "i"}]});
+        let live = json!({"containers": [{"name": "c", "image": "i"}]});
+        assert!(spec_subset(&git, &live));
+    }
+
+    #[test]
+    fn subset_tolerates_git_empty_array_vs_live_omitted() {
+        // k8s omits empty slices (httpGet.httpHeaders: [], env: [], …). An
+        // explicit `[]` in Git is equivalent to the field being absent in live.
+        // (BUG 9: KSM/node-exporter livenessProbe.httpGet.httpHeaders: [].)
+        let git = json!({"httpHeaders": [], "port": "http"});
+        let live = json!({"port": "http"});
+        assert!(spec_subset(&git, &live));
+    }
+
+    #[test]
+    fn subset_tolerates_git_null_vs_live_omitted() {
+        // k8s omits null fields (httpGet.httpHeaders: null, …). An explicit
+        // null in Git is equivalent to the field being absent in live.
+        // (BUG 9: KSM/node-exporter livenessProbe.httpGet.httpHeaders: null.)
+        let git = json!({"httpHeaders": null, "port": "http"});
+        let live = json!({"port": "http"});
+        assert!(spec_subset(&git, &live));
+    }
+
+    #[test]
+    fn subset_tolerates_git_zero_number_vs_live_omitted() {
+        // k8s omits zero-value integer fields (livenessProbe.initialDelaySeconds,
+        // periodSeconds, timeoutSeconds, … — int32 with omitempty). An explicit
+        // `0` in Git is equivalent to the field being absent in live.
+        // (BUG 9: node-exporter livenessProbe.initialDelaySeconds: 0.)
+        let git = json!({"initialDelaySeconds": 0, "port": "http"});
+        let live = json!({"port": "http"});
+        assert!(spec_subset(&git, &live));
+    }
+
+    #[test]
+    fn subset_still_detects_nonzero_number_mismatch() {
+        // Guard: a non-zero number in Git must still match live (0 vs 1 is drift
+        // when live actually carries the key).
+        let git = json!({"replicas": 0});
+        let live = json!({"replicas": 1});
+        assert!(!spec_subset(&git, &live));
+    }
+
+    #[test]
+    fn specs_differ_secret_stringdata_vs_live_data_no_drift() {
+        // k8s converts Secret `stringData` → base64 `data` on apply. Git
+        // carries stringData, live carries data; comparing them raw would
+        // drift forever. (BUG 9: vmalertmanager-vmks Secret.)
+        let git = json!({
+            "kind": "Secret",
+            "metadata": {"name": "s"},
+            "stringData": {"alertmanager.yaml": "receivers: []\n"}
+        });
+        let live = json!({
+            "kind": "Secret",
+            "metadata": {"name": "s"},
+            "data": {"alertmanager.yaml": "cmVjZWl2ZXJzOiBbXQo="}
+        });
+        assert!(!specs_differ(&git, &live));
     }
 
     // --- arrays: a Git element that is a subset of the live element (server
