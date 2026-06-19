@@ -136,64 +136,28 @@ pub enum RepoKind {
     Other,
 }
 
-/// Embed `user:pass` into `url` right after its scheme, percent-encoding the
-/// userinfo so special characters do not break parsing.
+/// Embed `user:pass` into `url` as HTTP basic-auth userinfo. `url::Url`
+/// percent-encodes the credentials and may normalize the URL (lowercase host,
+/// drop default port) — accepted as the trade-off for using the `url` crate.
+/// SSH/SCP URLs (which `url::Url` cannot parse) never reach here: `authed_url`
+/// only calls this for HTTPS URLs.
 fn embed_basic_auth(url: &str, user: &str, pass: &str) -> Result<String> {
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or_else(|| Error::Config(format!("repo URL has no scheme separator: {url}")))?;
-    Ok(format!(
-        "{}://{}:{}@{}",
-        scheme,
-        urlenc(user),
-        urlenc(pass),
-        rest
-    ))
+    let mut parsed = url::Url::parse(url)
+        .map_err(|e| Error::Config(format!("invalid repo URL '{url}': {e}")))?;
+    parsed
+        .set_username(user)
+        .map_err(|_| Error::Config("invalid git username".into()))?;
+    parsed
+        .set_password(Some(pass))
+        .map_err(|_| Error::Config("invalid git password".into()))?;
+    Ok(parsed.to_string())
 }
 
-fn urlenc(s: &str) -> String {
-    fn hex(b: u8) -> char {
-        char::from_digit(b as u32 >> 4, 16).unwrap()
-    }
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(b as char)
-            }
-            _ => {
-                out.push('%');
-                out.push(hex(b));
-                out.push(hex(b << 4));
-            }
-        }
-    }
-    out
-}
-
-/// Sensible parser for durations like `30s`, `5m`, `2h`.
+/// Parse a human-friendly duration: `30s`, `5m`, `2h`, `500ms`, and compound
+/// forms like `1h30m` / `1h 30m` / `30sec`. Wraps `humantime::parse_duration`;
+/// maps its error into [`Error::Config`].
 pub fn parse_duration(s: &str) -> Result<std::time::Duration> {
-    let s = s.trim();
-    if let Some(num) = s.strip_suffix("ms") {
-        return Ok(std::time::Duration::from_millis(num.parse().map_err(
-            |e: std::num::ParseIntError| Error::Config(format!("invalid duration: {e}")),
-        )?));
-    }
-    let (num, mult) = if let Some(n) = s.strip_suffix("s") {
-        (n, 1u64)
-    } else if let Some(n) = s.strip_suffix("m") {
-        (n, 60)
-    } else if let Some(n) = s.strip_suffix("h") {
-        (n, 3600)
-    } else {
-        return Err(Error::Config(format!(
-            "invalid duration '{s}': expected a number followed by s/m/h/ms"
-        )));
-    };
-    let n: u64 = num
-        .parse()
-        .map_err(|e: std::num::ParseIntError| Error::Config(format!("invalid duration: {e}")))?;
-    Ok(std::time::Duration::from_secs(n * mult))
+    humantime::parse_duration(s).map_err(|e| Error::Config(format!("invalid duration '{s}': {e}")))
 }
 
 #[cfg(test)]
@@ -231,6 +195,48 @@ mod tests {
     #[test]
     fn duration_invalid() {
         assert!(parse_duration("soon").is_err());
+    }
+
+    #[test]
+    fn duration_compound_form() {
+        assert_eq!(
+            parse_duration("1h30m").unwrap(),
+            std::time::Duration::from_secs(5400)
+        );
+    }
+
+    #[test]
+    fn duration_long_unit_names() {
+        assert_eq!(
+            parse_duration("30sec").unwrap(),
+            std::time::Duration::from_secs(30)
+        );
+        assert_eq!(
+            parse_duration("30 seconds").unwrap(),
+            std::time::Duration::from_secs(30)
+        );
+    }
+
+    #[test]
+    fn duration_default_values_parse() {
+        // The CLI default_value strings must all parse.
+        assert_eq!(
+            parse_duration("60s").unwrap(),
+            std::time::Duration::from_secs(60)
+        );
+        assert_eq!(
+            parse_duration("5s").unwrap(),
+            std::time::Duration::from_secs(5)
+        );
+        assert_eq!(
+            parse_duration("10m").unwrap(),
+            std::time::Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn duration_empty_is_invalid() {
+        assert!(parse_duration("").is_err());
     }
 
     /// Minimal `Config` for testing URL/credential helpers.
@@ -280,7 +286,14 @@ mod tests {
     fn embed_basic_auth_percent_encodes_special() {
         // '@' and '/' in credentials must be encoded so they do not break parsing.
         let s = embed_basic_auth("https://host/path", "a/b", "p@ss").unwrap();
-        assert_eq!(s, "https://a%2fb:p%40ss@host/path");
+        assert_eq!(s, "https://a%2Fb:p%40ss@host/path");
+    }
+
+    #[test]
+    fn embed_basic_auth_encodes_non_ascii_utf8() {
+        // Non-ASCII bytes are percent-encoded per UTF-8 ("あ" = E3 81 82).
+        let s = embed_basic_auth("https://host/p", "あ", "い").unwrap();
+        assert_eq!(s, "https://%E3%81%82:%E3%81%84@host/p");
     }
 
     #[test]

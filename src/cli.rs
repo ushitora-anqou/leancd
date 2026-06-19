@@ -46,7 +46,7 @@ pub struct CommonArgs {
     #[arg(long, env = "LEANCD_PATH", value_delimiter = ',')]
     pub path: Vec<String>,
 
-    /// Polling interval (e.g. 30s, 5m).
+    /// Polling interval (e.g. 30s, 5m, or a compound form like 1h30m).
     #[arg(long, env = "LEANCD_POLL_INTERVAL", default_value = "60s")]
     pub poll_interval: String,
 
