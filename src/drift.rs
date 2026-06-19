@@ -126,8 +126,8 @@ pub fn specs_differ(git: &Value, live: &Value) -> bool {
     // rest) is compared, tolerating either side holding what the other stores
     // under the opposite key. (BUG 9.) Only Secrets use `stringData`, so this
     // is a no-op for other kinds.
-    let git = strip_type_fields(&strip_secret_string_data(git));
-    let live = strip_type_fields(&strip_secret_string_data(live));
+    let git = remove_top_level_keys(git, &["apiVersion", "kind", "stringData"]);
+    let live = remove_top_level_keys(live, &["apiVersion", "kind", "stringData"]);
     let git_spec = git.get("spec");
     let live_spec = live.get("spec");
     match (git_spec, live_spec) {
@@ -139,25 +139,17 @@ pub fn specs_differ(git: &Value, live: &Value) -> bool {
     }
 }
 
-/// Return a copy of `v` with a top-level `stringData` field removed (see
-/// [`specs_differ`]).
-fn strip_secret_string_data(v: &Value) -> Value {
+/// Return a copy of `v` with the given top-level keys removed. Non-objects are
+/// returned unchanged (cloned). Used to strip type fields (`apiVersion`/`kind`)
+/// and Secret `stringData` before drift comparison.
+fn remove_top_level_keys(v: &Value, keys: &[&str]) -> Value {
     let mut obj = match v.as_object() {
         Some(o) => o.clone(),
         None => return v.clone(),
     };
-    obj.remove("stringData");
-    Value::Object(obj)
-}
-
-/// Return a copy of `v` with `apiVersion` and `kind` removed (top level only).
-fn strip_type_fields(v: &Value) -> Value {
-    let mut obj = match v.as_object() {
-        Some(o) => o.clone(),
-        None => return v.clone(),
-    };
-    obj.remove("apiVersion");
-    obj.remove("kind");
+    for k in keys {
+        obj.remove(*k);
+    }
     Value::Object(obj)
 }
 
@@ -527,5 +519,33 @@ mod tests {
         let drifts = compute_drifts(&[m_a, m_b], &live);
         assert_eq!(drifts.len(), 1, "only ns2 should differ");
         assert_eq!(drifts[0].key.namespace.as_deref(), Some("ns2"));
+    }
+
+    // --- remove_top_level_keys: the shared strip helper ---
+
+    #[test]
+    fn remove_top_level_keys_removes_named_keys() {
+        let v = json!({"a": 1, "b": 2, "c": 3});
+        assert_eq!(remove_top_level_keys(&v, &["a", "c"]), json!({"b": 2}));
+    }
+
+    #[test]
+    fn remove_top_level_keys_no_op_on_non_object() {
+        assert_eq!(remove_top_level_keys(&json!(42), &["a"]), json!(42));
+        assert_eq!(remove_top_level_keys(&json!("x"), &["a"]), json!("x"));
+        assert_eq!(remove_top_level_keys(&json!([1, 2]), &["a"]), json!([1, 2]));
+        assert_eq!(remove_top_level_keys(&Value::Null, &["a"]), Value::Null);
+    }
+
+    #[test]
+    fn remove_top_level_keys_missing_key_is_noop() {
+        let v = json!({"a": 1, "b": 2});
+        assert_eq!(remove_top_level_keys(&v, &["zzz"]), json!({"a": 1, "b": 2}));
+    }
+
+    #[test]
+    fn remove_top_level_keys_empty_slice_is_clone() {
+        let v = json!({"a": 1, "b": 2});
+        assert_eq!(remove_top_level_keys(&v, &[]), json!({"a": 1, "b": 2}));
     }
 }

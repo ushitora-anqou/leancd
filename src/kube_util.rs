@@ -5,6 +5,8 @@
 //! Per the memory strategy we never build an informer/cache; every call here
 //! issues a direct API request and returns immediately.
 
+use std::collections::HashMap;
+
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams};
 use kube::client::Client;
 use kube::core::{ApiResource, DynamicObject, GroupVersionKind};
@@ -25,6 +27,43 @@ pub async fn resolve(
         .await
         .map_err(|e| Error::Other(format!("api discovery for {gvk:?} failed: {e}")))?;
     Ok(pair)
+}
+
+/// Per-pass discovery cache: maps a resolved `(group, version, kind)` to its
+/// `(ApiResource, ApiCapabilities)` so repeated lookups within one
+/// reconcile/prune pass skip the discovery round-trip. Intentionally **not**
+/// cluster-wide — construct one per pass and drop it when the pass ends, so the
+/// memory strategy's "no kube-rs informer/cache" rule is respected.
+#[derive(Default)]
+pub struct DiscoveryCache {
+    map: HashMap<(String, String, String), (ApiResource, ApiCapabilities)>,
+}
+
+impl DiscoveryCache {
+    /// Create an empty per-pass cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Resolve `(group, version, kind)`, caching the result. On a cache hit the
+    /// discovery round-trip is skipped. Discovery failures are returned as-is
+    /// and **not** cached, so a transient failure can be retried later in the
+    /// same pass (callers currently `continue` on `Err`).
+    pub async fn get_or_resolve(
+        &mut self,
+        client: &Client,
+        group: &str,
+        version: &str,
+        kind: &str,
+    ) -> Result<(ApiResource, ApiCapabilities)> {
+        let key = (group.to_string(), version.to_string(), kind.to_string());
+        if let Some(pair) = self.map.get(&key) {
+            return Ok(pair.clone());
+        }
+        let pair = resolve(client, group, version, kind).await?;
+        self.map.insert(key, pair.clone());
+        Ok(pair)
+    }
 }
 
 /// Build a namespaced-or-cluster [`Api`] handle for a dynamic resource.

@@ -6,7 +6,7 @@
 //! All applies also inject a managed-by label, so a deployed resource that was
 //! taken over by another manager is identifiable.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use kube::core::DynamicObject;
 use serde::{Deserialize, Serialize};
@@ -114,10 +114,7 @@ pub async fn prune(
     // (2) Safety net: list live managed resources for each previously applied
     //     GVK and add any that Git no longer declares.
     let label_sel = format!("{}={}", cfg.managed_label_key, cfg.managed_label_value);
-    let mut discovery: HashMap<
-        (String, String, String),
-        (kube::core::ApiResource, kube::discovery::ApiCapabilities),
-    > = HashMap::new();
+    let mut discovery = kube_util::DiscoveryCache::new();
 
     let prev_gvks: HashSet<(String, String, String)> = prev
         .iter()
@@ -125,22 +122,16 @@ pub async fn prune(
         .collect();
     for gvk in &prev_gvks {
         let (group, version, kind) = gvk;
-        let (ar, _caps) = match discovery.get(gvk) {
-            Some(c) => c.clone(),
-            None => match kube_util::resolve(client, group, version, kind).await {
-                Ok(c) => {
-                    discovery.insert(gvk.clone(), c.clone());
-                    c
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        gvk = ?(group, version, kind),
-                        "prune: safety-net discovery failed, skipping list"
-                    );
-                    continue;
-                }
-            },
+        let (ar, _caps) = match discovery.get_or_resolve(client, group, version, kind).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    gvk = ?(group, version, kind),
+                    "prune: safety-net discovery failed, skipping list"
+                );
+                continue;
+            }
         };
         // List across ALL namespaces (BUG 5): a resource leancd applied in a
         // namespace other than cfg.namespace must still be pruned when it leaves Git.
@@ -166,19 +157,15 @@ pub async fn prune(
     // Delete the unified candidate set.
     let mut deleted = Vec::new();
     for key in targets {
-        let gk = (key.group.clone(), key.version.clone(), key.kind.clone());
-        let (ar, caps) = match discovery.get(&gk) {
-            Some(c) => c.clone(),
-            None => match kube_util::resolve(client, &key.group, &key.version, &key.kind).await {
-                Ok(c) => {
-                    discovery.insert(gk.clone(), c.clone());
-                    c
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, key = ?key, "prune: discovery failed, skipping");
-                    continue;
-                }
-            },
+        let (ar, caps) = match discovery
+            .get_or_resolve(client, &key.group, &key.version, &key.kind)
+            .await
+        {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, key = ?key, "prune: discovery failed, skipping");
+                continue;
+            }
         };
         // Honour `helm.sh/resource-policy: keep` and `helm.sh/hook`: inspect the
         // live object before deleting. A missing object (already gone) is a no-op.
