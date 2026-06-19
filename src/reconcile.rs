@@ -392,8 +392,8 @@ fn next_delay(
 /// `seed`. Used to jitter the backoff delay so repeated failures across
 /// instances do not synchronise. Pure: no I/O, fully unit-testable. The
 /// `splitmix64` bijection (public-domain Stafford constants) spreads
-/// consecutive seeds uniformly; `rand` is deliberately avoided to keep the
-/// dependency set (and RSS) minimal.
+/// consecutive seeds uniformly; `rand` is deliberately avoided so the jitter
+/// stays deterministic in `seed` (reproducible and unit-testable).
 fn jitter_factor(seed: u64) -> f64 {
     let mut z = seed.wrapping_add(0x9E3779B97F4A7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);

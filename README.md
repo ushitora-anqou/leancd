@@ -53,6 +53,7 @@ The resulting binary is a single static-ish executable run as a `Deployment`.
 leancd controller [flags]      run as a long-lived controller (deploy this)
 leancd sync    [flags]            run one reconciliation pass, then exit
 leancd status  [flags]            print the last recorded sync state
+leancd health  [flags]            check sync health for exec probes, then exit
 ```
 
 All configuration is supplied via flags (or `LEANCD_*` environment variables).

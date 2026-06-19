@@ -2,7 +2,8 @@
 
 ## IMPORTANT
 
-- **TDD**: When adding a feature or fixing a bug, write a failing test first, confirm it fails, then implement the fix.
+- **TDD (all three test layers)**: When adding a feature or fixing a bug, write a failing test first, confirm it fails, then implement the fix. Cover the change across **all three test layers** as appropriate — **unit tests** (`#[cfg(test)]` in each module), **integration tests** (cluster-free multi-module coverage under `tests/`), and **e2e tests** (`tests/e2e.rs`, a `kind` cluster with in-cluster Forgejo + leancd). Don't satisfy a change with a single layer when more apply.
+- **All tests must pass before finishing or committing**: Never mark a task done or run `git commit` until every layer is green — `cargo test` (unit + integration) **and** `make e2e` (e2e). Fix failures before moving on; never skip, `#[ignore]`, or work around a failing test.
 - **Pre-commit formatting**: Always run `make fmt` before `git commit`.
 - **Update documentation**: When adding or modifying a feature, update README.md and the `--help` output (clap `#[command]`/`#[arg]` attributes in `main.rs`) accordingly.
 
@@ -10,9 +11,9 @@
 
 **leancd** is a minimal, low-memory Kubernetes continuous-delivery controller written in Rust. It syncs plain YAML manifests from a Git repository into the cluster it runs in, detects drift, and self-heals — like Argo CD / Flux CD, but with one overriding constraint: the process RSS must stay **≤ 100MiB** at all times (idle and sync peak).
 
-This memory budget is **the headline goal** and is verified by an automated benchmark. Every design and implementation decision is justified against "does this increase RSS?". When in doubt, prefer fewer allocations, no caching, no background stores, and shelling out to `git` over embedding a Git library.
+This memory budget is **the headline goal** and is verified by an automated benchmark. Every design and implementation decision is justified against "does this increase RSS?". When in doubt, prefer fewer allocations, no caching, and no background stores.
 
-Rationale summary: RSS ≤ 100MiB is the headline goal, favoured over feature breadth, real-time responsiveness, and implementation convenience (Argo CD runs at hundreds of MiB–GiB, Flux at tens–100+MiB; leancd targets ≤100MiB). The trade-offs that enforce it — no cluster-wide cache, no background state, shallow clones, streaming YAML parses, a single-threaded runtime, minimal dependencies — are detailed in `doc/architecture.md` §14.
+Rationale summary: RSS ≤ 100MiB is the headline goal, favoured over feature breadth, real-time responsiveness, and implementation convenience (Argo CD runs at hundreds of MiB–GiB, Flux at tens–100+MiB; leancd targets ≤100MiB). The trade-offs that enforce it — no cluster-wide cache, no background state, shallow clones, streaming YAML parses, a single-threaded runtime — are detailed in `doc/architecture.md` §14.
 
 ## Commands
 
@@ -40,9 +41,9 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 
 ## Architecture
 
-### Single binary, three subcommands, one shared engine
+### Single binary, four subcommands, one shared engine
 
-`clap` (derive) defines `controller`, `sync`, and `status` (`cli.rs`). `controller` (long-lived, the `Deployment`) and `sync` (one pass) are dispatched to **the same `Reconciler`** (`reconcile.rs`) — `run_loop()` just calls `run_once()` on a poll interval, `sync` calls `run_once()` once and exits. This guarantees manual and automatic sync use identical apply logic. `status` is read-only (reads the state ConfigMap).
+`clap` (derive) defines `controller`, `sync`, `status`, and `health` (`cli.rs`), plus `--version`. `controller` (long-lived, the `Deployment`) and `sync` (one pass) are dispatched to **the same `Reconciler`** (`reconcile.rs`) — `run_loop()` just calls `run_once()` on a poll interval, `sync` calls `run_once()` once and exits. This guarantees manual and automatic sync use identical apply logic. `status` and `health` are read-only (they read the state ConfigMap); `health` classifies freshness for an `exec` liveness/readiness probe.
 
 ### Reconciliation flow (`reconcile.rs::reconcile`)
 
@@ -57,7 +58,7 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 
 - **No kube-rs informer/cache.** `kube_util.rs` never builds a `Controller` or `Store`. Every interaction is a direct `List`/`Get`/`Patch` on `DynamicObject` and returns immediately.
 - **Drift via periodic `List`, never `Watch`.** One `List` per managed GVK (filtered by the managed-by label), then a recursive subset check (`spec_subset`) that tolerates server-injected defaults.
-- **`git` via shell-out** (`tokio::process::Command`), chosen deliberately over an embedded Git library (`gix`): git runs as a separate process so its memory is **not** counted in leancd's RSS, and shelling out gives reliable repeated fetches without the low-level API risk of `gix`.
+- **`git` via shell-out** (`tokio::process::Command`): the `git` CLI gives reliable repeated shallow fetches through a simple, well-trodden API. (The benchmark samples both leancd's own RSS and the whole process tree — leancd plus its git/ssh subprocesses — so git's footprint is accounted for either way.)
 - **Streaming YAML parse** (`serde_yaml::Deserializer`) — one document at a time.
 - **State is one ConfigMap + a label**, not a CRD or DB. Process memory holds only: last SHA, lightweight API-discovery metadata (GVK → `ApiResource`, no resource bodies), and transient pass state.
 - **`tokio` `current_thread` runtime** (`#[tokio::main(flavor = "current_thread")]`) to minimize thread/stack memory.
@@ -77,6 +78,9 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 | `drift.rs` | per-GVK `List` + subset comparison |
 | `state.rs` | single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
 | `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics via `PeriodicReader`; exposes `leancd_rss_bytes`. No HTTP listener. |
+| `error.rs` | `thiserror` `Error` enum (`Git`, `Manifest`, `Kube`, `Config`, `Hook`, `Io`, `Other`) and `Result` alias |
+| `health.rs` | `health` subcommand: classifies the last sync state (fresh/never/stale/failing) for `exec` liveness/readiness probes |
+| `version.rs` | build-time version info: embeds the git SHA (via `build.rs`) for `--version` and the startup log |
 
 ## Implementation notes worth remembering
 
@@ -89,5 +93,5 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 ## Conventions when editing
 
 - Match the existing style: module-level `//!` doc comments, `tracing` structured logs (`tracing::warn!`/`info!` with `error = %e`), `crate::error::{Error, Result}` (thiserror enum) rather than `anyhow` in library code (`anyhow` is only at `main`'s top level).
-- Keep new dependencies minimal — remember `cargo-deny` only allows Apache-2.0-compatible licenses (see `deny.toml`). Evaluate any added dependency against the RSS budget first.
+- Prefer reusing an existing library or implementation over hand-rolling your own; the dependency count is not a concern as long as runtime RSS stays within budget. Remember `cargo-deny` only allows Apache-2.0-compatible licenses (see `deny.toml`).
 - When changing kube interaction code, confirm it issues direct API calls and builds no cache.

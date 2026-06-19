@@ -1,9 +1,10 @@
 //! Git synchronization via the `git` CLI (shallow, polling-based).
 //!
-//! We shell out to `git` rather than embed a Git library: git runs as a
-//! separate process, so its memory is not counted in leancd's RSS (the headline
-//! memory budget). A depth-1 shallow checkout keeps the working
-//! tree small; HEAD SHA comparison drives change detection.
+//! We shell out to `git` rather than embed a Git library: the `git` CLI gives
+//! reliable repeated shallow fetches and resets through a simple, battle-tested
+//! API, with no need to re-implement that machinery in-process. A depth-1
+//! shallow checkout keeps the working tree small; HEAD SHA comparison drives
+//! change detection.
 //!
 //! Both HTTPS (basic auth embedded in the URL) and SSH (an injected private
 //! key, passed to git via `GIT_SSH_COMMAND`) transports are supported. The SSH

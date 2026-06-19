@@ -3,8 +3,7 @@
 This document describes **how the current implementation works** and, where it
 matters, *why* it works that way. The overriding goal is keeping process RSS at
 or below 100MiB; every mechanism below exists to preserve that budget, and the
-trade-offs it forces — no cluster-wide cache, no background state, shelling out
-to `git` — are noted inline where relevant.
+trade-offs it forces — no cluster-wide cache and no background state — are noted inline where relevant.
 
 For a quick overview see [`../README.md`](../README.md); for the complete
 feature reference (every flag, env var, metric) see
@@ -13,15 +12,16 @@ feature reference (every flag, env var, metric) see
 
 ## 1. Overview
 
-leancd is a single static binary with three subcommands that all share one
-reconciliation engine. One running process syncs exactly one Git repository
-(one branch, one path) into the cluster it runs in.
+leancd is a single static binary with four subcommands. The `controller` and
+`sync` subcommands share one reconciliation engine; `status` and `health` are
+read-only. One running process syncs exactly one Git repository (one branch,
+one path) into the cluster it runs in.
 
 ```
         ┌─────────────────────────────────────────────┐
         │                  leancd                     │
         │                                             │
-        │  controller / sync / status  ──► Reconciler │
+        │ controller / sync / status / health ► Reconciler │
         │                                      │      │
         │   ┌──────────┬──────────┬──────────┬───────┼───┐
         │   ▼          ▼          ▼          ▼       ▼   │
@@ -39,18 +39,18 @@ The overriding invariant is that process RSS stays **≤ 100MiB** at all times
 (idle and at sync peak). That budget is the project's headline goal — favoured
 over feature breadth, real-time responsiveness, and implementation convenience
 — so every mechanism below exists to preserve it: no cluster-wide cache, no
-background state, shallow clones, streaming parses, a single-threaded runtime,
-and minimal dependencies.
+background state, shallow clones, streaming parses, and a single-threaded runtime.
 
 ## 2. Module map
 
-`src/` contains twelve modules. `reconcile` is the hub; `kube_util` is the only
+`src/` contains fifteen modules. `reconcile` is the hub; `kube_util` is the only
 boundary that touches the Kubernetes API; `main` wires the runtime.
 
 | Module | Responsibility |
 |---|---|
 | `main.rs` | Entry point: `tokio` `current_thread` runtime, tracing, subcommand dispatch, graceful shutdown |
-| `cli.rs` | `clap` subcommands (`controller`, `sync`, `status`) and shared `CommonArgs` → `Config` |
+| `cli.rs` | `clap` subcommands (`controller`, `sync`, `status`, `health`) and shared `CommonArgs` → `Config` |
+| `health.rs` | `health` subcommand: classifies the last sync state (fresh/never/stale/failing) for `exec` liveness/readiness probes |
 | `config.rs` | Validated `Config`; Git-transport classification; credential resolution; duration parser |
 | `git_sync.rs` | Shallow `fetch`/`clone` and HEAD-SHA change detection via the `git` CLI |
 | `manifest.rs` | Streaming multi-document YAML parse; GVK/ns/name extraction; `kind: List` expansion; managed-label injection; annotation read helper |
@@ -62,10 +62,11 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | `state.rs` | Single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
 | `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics; exposes `leancd_rss_bytes`. No HTTP listener. |
 | `error.rs` | `thiserror` `Error` enum (`Git`, `Manifest`, `Kube`, `Config`, `Hook`, `Io`, `Other`) and `Result` alias |
+| `version.rs` | Build-time version info: embeds the git SHA (via `build.rs`) for `--version` and the startup log |
 
-## 3. The single binary and its three subcommands
+## 3. The single binary and its four subcommands
 
-`cli.rs` defines three subcommands. `controller` and `sync` are dispatched to
+`cli.rs` defines four subcommands. `controller` and `sync` are dispatched to
 **the same `Reconciler`** — `controller` is just `sync` called repeatedly.
 
 | Subcommand | Behaviour | Entry |
@@ -73,6 +74,7 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | `controller` | Long-lived: initialises the OTel meter provider, then runs `run_loop()` until shutdown | `run_controller` |
 | `sync` | One reconciliation pass (`run_once()`), then exits | `run_sync` |
 | `status` | Reads the state ConfigMap and prints it, then exits (no reconciliation) | `run_status` |
+| `health` | Reads the state ConfigMap, classifies freshness/staleness/failure for `exec` probes, then exits (no reconciliation) | `health::run_health` |
 
 Because manual and automatic sync share `run_once`, the apply logic is
 identical in both paths.
@@ -152,13 +154,15 @@ or discovery-stopping errors. `run_once` increments `sync_errors` and records
 `run_loop` simply calls `run_once(false)` in a loop, sleeping `poll_interval`
 between passes and logging (never aborting on) per-pass errors.
 
-## 5. Git and the git CLI — process isolation
+## 5. Git and the git CLI
 
 leancd shells out to `git` (`tokio::process::Command`) rather than embedding a
-Git library. Because `git` runs as a separate process, its memory is **not**
-counted in leancd's RSS — this is the core reason the shell-out approach was
-chosen over an embedded `gix`, whose low-level repeated-fetch API would also
-add implementation risk for no RSS benefit.
+Git library. The `git` CLI gives reliable repeated shallow fetches and resets
+through a simple, battle-tested API; an embedded library such as `gix` would
+re-implement that machinery and expose its low-level repeated-fetch surface for
+no gain. (The benchmark samples both leancd's own RSS and the whole process
+tree — leancd plus its git/ssh subprocesses — so git's footprint is accounted
+for either way.)
 
 `git_sync::sync` keeps a depth-1 shallow checkout:
 
@@ -417,8 +421,10 @@ Implementation caveats (the memory strategy that keeps RSS ≤ 100MiB):
   whole.
 - The async runtime is single-threaded (`current_thread`) to avoid per-thread
   stack memory.
-- Dependencies are kept minimal (rustls over OpenSSL, trimmed `features`),
-  gated by `cargo-deny`.
+- TLS uses rustls rather than OpenSSL for licensing/supply-chain reasons; the
+  dependency set is gated by `cargo-deny` (Apache-2.0-compatible licenses; see
+  `deny.toml`). The dependency count is not minimized for its own sake — runtime
+  RSS is the metric that matters.
 
 ## 15. Cross-references
 
