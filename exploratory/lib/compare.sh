@@ -26,6 +26,11 @@ normalize() {
             and (.key != "argocd.argoproj.io/last-applied-configuration")
             and (.key != "kubectl.kubernetes.io/last-applied-configuration")
             and (.key != "deployment.kubernetes.io/revision")
+            # VM/operator-injected content hashes + Grafana checksums legitimately
+            # differ across the two clusters (operator-generated, not from Git).
+            and ((.key | startswith("checksum/")) | not)
+            and ((.key | startswith("operator.victoriametrics.com/")) | not)
+            and ((.key | startswith("victoriametrics.com/")) | not)
           ))
         end
       | if (.metadata.labels // null) == null then . else
@@ -102,5 +107,52 @@ exists_in() { # <lean|argo> <kind> <name> [namespace]
         kc_lean get "$kind" "$name" ${ns:+-n "$ns"} >/dev/null 2>&1
     else
         kc_argo get "$kind" "$name" ${ns:+-n "$ns"} >/dev/null 2>&1
+    fi
+}
+
+# Compare a Secret across the two clusters by the SET of data keys only (not the
+# base64 values). Operator-generated Secrets (webhook certs) and any randomly
+# seeded values legitimately differ byte-for-byte across clusters, so comparing
+# values would report perpetual noise. A key-set mismatch (e.g. one cluster has
+# admin-password and the other does not) is a real divergence.
+# Usage: compare_secret <name> [namespace]
+compare_secret() {
+    local name="$1" ns="${2:-}"
+    local label="${ns:+$ns/}secret/$name"
+    local lean_keys argo_keys
+    lean_keys="$(kc_lean get secret "$name" ${ns:+-n "$ns"} -o json 2>/dev/null \
+        | jq -r '.data // {} | keys | sort | join(",")' 2>/dev/null || echo MISSING)"
+    argo_keys="$(kc_argo get secret "$name" ${ns:+-n "$ns"} -o json 2>/dev/null \
+        | jq -r '.data // {} | keys | sort | join(",")' 2>/dev/null || echo MISSING)"
+    if [[ "$lean_keys" == "MISSING" && "$argo_keys" == "MISSING" ]]; then
+        echo "  [-] BOTH ABSENT: $label"; COMPARE_RESULT=both_absent; return 0
+    elif [[ "$lean_keys" == "MISSING" ]]; then
+        echo "  [!] MISSING in leancd: $label"; COMPARE_RESULT=lean_missing; return 1
+    elif [[ "$argo_keys" == "MISSING" ]]; then
+        echo "  [!] MISSING in argocd: $label"; COMPARE_RESULT=argo_missing; return 1
+    elif [[ "$lean_keys" == "$argo_keys" ]]; then
+        echo "  [=] MATCH (data key-set): $label  keys=[$lean_keys]"; COMPARE_RESULT=match; return 0
+    else
+        echo "  [~] DIFF (data key-set): $label"
+        echo "        lean=[$lean_keys]"
+        echo "        argo=[$argo_keys]"
+        COMPARE_RESULT=diff; return 1
+    fi
+}
+
+# Summarize the managed resource COUNT for a kind across both clusters
+# (namespaced: counts in SYNC_NS; cluster-scoped: counts cluster-wide). Useful
+# for the "full stack deployed" scenario where enumerating every object is noisy.
+# Usage: compare_count <kind> [namespace]
+compare_count() {
+    local kind="$1" ns="${2:-}"
+    local lean_n argo_n
+    lean_n="$(kc_lean get "$kind" ${ns:+-n "$ns"} -o name 2>/dev/null | wc -l | tr -d ' ')"
+    argo_n="$(kc_argo get "$kind" ${ns:+-n "$ns"} -o name 2>/dev/null | wc -l | tr -d ' ')"
+    local label="${ns:+$ns/}$kind"
+    if [[ "$lean_n" == "$argo_n" ]]; then
+        echo "  [=] MATCH count: $label  lean=$lean_n argo=$argo_n"
+    else
+        echo "  [~] DIFF count: $label  lean=$lean_n argo=$argo_n"
     fi
 }

@@ -8,6 +8,8 @@ kc_lean create namespace "$SYNC_NS" 2>/dev/null || true
 sed "s|__FORGEJO_GIT_URL__|$(forgejo_git_url)|g" \
     "$EXPLORATORY_DIR/manifests/leancd.yaml" | kc_lean apply -f - >/dev/null
 
+log "restarting leancd Deployment to pick up the freshly-loaded image..."
+kc_lean rollout restart deploy/leancd -n leancd
 log "waiting for leancd Deployment to roll out..."
 kc_lean rollout status deploy/leancd -n leancd --timeout=120s >/dev/null
 

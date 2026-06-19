@@ -1,0 +1,68 @@
+#################################################
+# VictoriaMetrics K8s Stack — leancd-vs-ArgoCD  #
+# comparison overlay. Renders into namespace    #
+# `app` (SYNC_NS) via `helm template --namespace #
+# app`. Tuned for a single-node kind cluster.   #
+#################################################
+
+# Short release/override name to stay clear of the 63-char resource-name limit
+# (the chart docs warn about this for long release names).
+nameOverride: vmks
+fullnameOverride: vmks
+
+# --- VictoriaMetrics operator + components (all required by the comparison) ---
+victoria-metrics-operator:
+  enabled: true
+  operator:
+    # Keep the default prometheus-operator CR converter off — we do not feed it
+    # Prometheus CRs and it only adds discovery noise.
+    disable_prometheus_converter: false
+
+# VMSingle (single-node TSDB) — the comparison's primary storage CR.
+vmsingle:
+  enabled: true
+  spec:
+    retentionPeriod: "1"
+    storage:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 2Gi
+
+vmagent:
+  enabled: true
+
+vmalert:
+  enabled: true
+
+# VMCluster is intentionally OFF — VMSingle is the target storage.
+vmcluster:
+  enabled: false
+
+# --- dependency subcharts ---
+grafana:
+  enabled: true
+  persistence:
+    enabled: false
+  # PIN the admin password: otherwise the chart's randAlphaNum call would make
+  # every render produce a different Secret, masking real sync divergence. Both
+  # controllers now sync byte-identical YAML.
+  adminPassword: "vm-compare-admin"
+
+prometheus-node-exporter:
+  enabled: true
+
+kube-state-metrics:
+  enabled: true
+
+# --- dashboards + recording/alerting rules (kept ON deliberately) ---
+# defaultDashboards generates the large Grafana dashboard ConfigMaps that stress
+# the 262144-byte annotation limit — a documented ArgoCD pain point (S8).
+defaultDashboards:
+  enabled: true
+
+# defaultRules emits many VMRule CRs across the cluster — exercises CR prune /
+# drift / multi-doc apply at scale (S2/S3/S4).
+defaultRules:
+  create: true

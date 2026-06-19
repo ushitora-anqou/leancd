@@ -26,7 +26,13 @@ metadata:
 rules:
   - apiGroups: ["*"]
     resources: ["*"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+    # All verbs (incl. deletecollection, escalate, bind, impersonate) so the
+  #   controller can itself create the victoria-metrics-operator's powerful
+  #   ClusterRoles (otherwise Kubernetes' RBAC escalation-prevention rejects
+  #   them as "granting permissions not currently held"). Mirrors Argo CD's
+  #   cluster-admin-equivalent install. Production deployments should narrow
+  #   this via deploy/leancd-namespaced.yaml.
+    verbs: ["*"]
   - nonResourceURLs: ["*"]
     verbs: ["*"]
 ---

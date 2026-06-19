@@ -1,38 +1,56 @@
-# leancd vs Argo CD — exploratory sync comparison
+# leancd vs Argo CD — VictoriaMetrics K8s Stack exploratory sync comparison
 
-Exploratory test harness that stands up **two kind clusters** — one running
+Exploratory harness that stands up **two kind clusters** — one running
 **leancd**, one running **Argo CD** — pointed at the same Forgejo Git repo, then
-drives identical operations against the repo and the live clusters to see
-whether the two reconcile the same way. Any divergence where leancd does not
-match Argo CD's outcome is recorded as a leancd bug.
+syncs the **VictoriaMetrics K8s Stack** Helm chart (rendered via `helm template`)
+into both and drives identical operations against the repo and the live clusters
+to see whether the two reconcile the same way. Any divergence where leancd's
+final state differs from Argo CD's, or where leancd fails to converge, is
+recorded as a leancd bug in `notes/bugs.md`.
+
+This is a deliberately **hard** workload for a low-memory CD controller: ~10
+operator CRDs (prepended via `helm show crds`, since `helm template` skips
+`crds/`), the operator pattern (runtime-created child resources that are not in
+Git), Grafana dashboard ConfigMaps that approach the 262144-byte annotation
+limit, and a `helm.sh/hook: pre-delete` cleanup hook that Argo CD ignores but
+leancd runs.
 
 ## Layout
-- `setup.sh` / `teardown.sh` — bring up / tear down the 2 kind clusters plus a
-  shared host-side Forgejo container on the `kind` Docker network (both
-  controllers reach it at the container's Docker IP).
-- `deploy-leancd.sh` / `deploy-argocd.sh` — deploy each controller against the
-  shared repo, syncing repo root into namespace `app` with Server-Side Apply.
+- `setup.sh` / `teardown.sh` — bring up / tear down the 2 kind clusters + shared
+  host-side Forgejo. `setup.sh` also installs the Argo CD controller (see
+  `install-argocd.sh`) — previously this step was missing.
+- `install-argocd.sh` — install the Argo CD controller (official v3 install
+  manifest, `--server-side --force-conflicts`) into `argocd-compare`.
+- `deploy-leancd.sh` / `deploy-argocd.sh` — point each controller at the shared
+  repo, syncing repo root into namespace `app` with Server-Side Apply.
+- `vm-stack/values.yaml` — kind-tuned chart overlay (`nameOverride: vmks`,
+  Grafana persistence off + admin password pinned, VMSingle 2Gi, dashboards and
+  VMRules kept ON).
+- `vm-stack/render.sh` — `helm show crds` + `helm template` into a single
+  `vm-stack.yaml` (CRDs first) in the repo workdir; reports doc/CRD counts and
+  largest-doc size.
 - `manifests/` — leancd Deployment/RBAC/Secret, Argo CD AppProject/Application +
   repository Secret. `__FORGEJO_GIT_URL__` is substituted at deploy time.
 - `lib/common.sh` — shared constants, `kc_lean`/`kc_argo` wrappers, `wait_for`.
-- `lib/git.sh` — host-side git push/clone against Forgejo + `wait_sync`
-  (converges both controllers onto a repo HEAD).
-- `lib/compare.sh` — `normalize` (strip status / server-defaults / manager
-  labels) and `compare_resource` (normalized JSON diff between clusters).
-- `run.sh` — runs the 10 scenarios and appends to `report.md`.
+- `lib/git.sh` — host-side git push/clone against Forgejo + `wait_sync`.
+- `lib/compare.sh` — `normalize`, `compare_resource`, `compare_secret`,
+  `compare_count` (normalized JSON diff / key-set / count between clusters).
+- `run.sh` — runs the 10 VictoriaMetrics scenarios and writes `report.md`.
 - `report.md` — the generated comparison report.
 - `notes/bugs.md` — leancd bugs found during the run.
 
 ## Running
 ```sh
-./setup.sh
+./setup.sh                                                  # clusters + Forgejo + Argo CD
 docker build -t leancd:latest .
 kind load docker-image leancd:latest --name leancd-compare
 ./deploy-leancd.sh
 ./deploy-argocd.sh
-./run.sh            # writes report.md
+./run.sh            # renders the VM chart then writes report.md
 ./teardown.sh
 ```
+(`run.sh` invokes `vm-stack/render.sh` itself, so the chart is rendered fresh
+each run into the repo workdir before being pushed.)
 
 ## Judgement criteria (agreed with the user)
 The **primary** check is **final-state equality** of the synced resources
@@ -42,13 +60,13 @@ differences, not bugs**. Where leancd's final state diverges from Argo CD's, or
 where it fails to converge, that is recorded as a leancd bug.
 
 ## Scenarios
-1. Initial apply (ConfigMap + Deployment + Service)
-2. Add a resource (cm-b)
-3. Update a resource (cm-a data)
-4. Delete a resource (prune cm-b)
-5. Drift self-heal (live spec mutation)
-6. Drift self-heal (live resource deletion)
-7. SSA field-manager conflict
-8. CRD + custom resource
-9. Cluster-scoped + other-namespace resources
-10. Multi-document YAML + kind:List
+1. Initial full VictoriaMetrics stack deploy (~135 docs, CRD + CR together)
+2. Add a custom VMRule
+3. Update the custom VMRule
+4. Delete the custom VMRule (prune)
+5. Drift self-heal (live mutation of a VMSingle CR spec)
+6. Operator-created children coexist (neither controller prunes them)
+7. Operator recreates a deleted child (neither controller owns it)
+8. Large dashboard ConfigMaps under Server-Side Apply (262144-byte limit)
+9. SSA field-manager conflict on a VMSingle CR (BUG 4 regression guard)
+10. Full teardown + `pre-delete` hook divergence (leancd runs it, Argo CD ignores it)

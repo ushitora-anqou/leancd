@@ -33,6 +33,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Metrics docs**: Prometheus ingestion guidance (Prometheus ≥ 3.0 native OTLP
   / OTel Collector) added to the user manual.
 
+### Notes
+
+- **BUG 8 (VictoriaMetrics dashboard ConfigMap annotations) reclassified as not
+  a bug**: the annotation delta vs Argo CD is Argo CD's injected
+  `argocd.argoproj.io/tracking-id`, never present in the source manifest. A
+  regression test (`apply_round_trip_preserves_metadata_annotations`) pins that
+  `metadata.annotations` and `data` survive leancd's SSA patch-body round-trip.
+
+### Fixed
+
+- **BUG 9 (drift false-positive on k8s zero-value fields)**: `drift::spec_subset`
+  now treats k8s zero-value fields (boolean `false`, `null`, empty `[]`, and
+  number `0`) as equivalent to the field being absent in live, and
+  `specs_differ` strips Secret `stringData` (k8s converts it to base64 `data` on
+  apply). Previously the VictoriaMetrics K8s Stack re-applied 3 resources every
+  pass (KSM Deployment `hostNetwork: false`; node-exporter DaemonSet
+  `livenessProbe.httpGet.httpHeaders: null` / `initialDelaySeconds: 0`;
+  vmalertmanager Secret `stringData`) — `drift_count` now stays 0.
+
 ## [0.1.0] - 2026-06-13
 
 Initial public baseline: Git-to-cluster sync, server-side apply, drift
