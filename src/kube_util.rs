@@ -161,4 +161,46 @@ mod tests {
         assert_eq!(dp.grace_period_seconds, None);
         assert!(dp.preconditions.is_none());
     }
+
+    /// `kube_util::apply` builds the SSA patch body by deserializing the manifest
+    /// into a `DynamicObject` and letting `Patch::Apply` re-serialize it. A
+    /// ConfigMap has both `metadata.annotations` and a top-level `data` field, so
+    /// this test pins that both survive that round-trip — guarding against any
+    /// future regression where annotations (or `data`) would be silently dropped
+    /// on apply. (Background: the VM-stack comparison once flagged dashboard
+    /// ConfigMaps as missing annotations vs Argo CD; that delta turned out to be
+    /// Argo's own tracking-id, never present in the source manifest — so this
+    /// test asserts the leancd side is correct and stays correct.)
+    #[test]
+    fn apply_round_trip_preserves_metadata_annotations() {
+        use kube::core::DynamicObject;
+        let manifest = serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {
+                "name": "vmks-grafana-overview",
+                "namespace": "app",
+                "annotations": {
+                    "grafana_dashboard": "1",
+                    "my.example/ann": "value"
+                }
+            },
+            "data": { "grafana-overview.json": "{\"title\":\"x\"}" }
+        });
+        let obj: DynamicObject =
+            serde_json::from_value(manifest.clone()).expect("parse manifest into DynamicObject");
+        // This is what Patch::Apply(&obj) sends over the wire.
+        let wire: serde_json::Value =
+            serde_json::from_slice(&serde_json::to_vec(&obj).expect("serialize DynamicObject"))
+                .expect("parse wire body");
+        assert_eq!(
+            wire["metadata"]["annotations"],
+            manifest["metadata"]["annotations"],
+            "SSA patch body must preserve metadata.annotations through the DynamicObject round-trip"
+        );
+        assert_eq!(
+            wire["data"], manifest["data"],
+            "ConfigMap data must survive the round-trip"
+        );
+    }
 }
