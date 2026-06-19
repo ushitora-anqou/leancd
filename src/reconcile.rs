@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kube::client::Client;
+use rand::Rng;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -221,28 +222,20 @@ impl Reconciler {
     /// Apply every manifest, sharing one API-discovery lookup per resource kind.
     /// Individual apply failures are logged but do not abort the pass.
     async fn apply_all(&self, manifests: &[RawManifest]) -> Result<()> {
-        let mut cache: HashMap<
-            (String, String, String),
-            (kube::core::ApiResource, kube::discovery::ApiCapabilities),
-        > = HashMap::new();
+        let mut cache = kube_util::DiscoveryCache::new();
         let mut applied = 0usize;
         let mut failed = 0usize;
         for m in manifests {
             let gk = m.gvk();
-            let (ar, caps) = match cache.get(&gk) {
-                Some(c) => c.clone(),
-                None => {
-                    match kube_util::resolve(&self.client, &m.group, &m.version, &m.kind).await {
-                        Ok(c) => {
-                            cache.insert(gk, c.clone());
-                            c
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, ?gk, "discovery failed; skipping resource");
-                            failed += 1;
-                            continue;
-                        }
-                    }
+            let (ar, caps) = match cache
+                .get_or_resolve(&self.client, &m.group, &m.version, &m.kind)
+                .await
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, ?gk, "discovery failed; skipping resource");
+                    failed += 1;
+                    continue;
                 }
             };
             match kube_util::apply(
@@ -315,7 +308,7 @@ impl Reconciler {
             // Jitter the backoff path so repeated failures across instances do
             // not synchronise; the poll interval after a success is left exact.
             let delay = if consecutive_failures > 0 {
-                jittered(delay, jitter_seed())
+                jittered(delay)
             } else {
                 delay
             };
@@ -388,36 +381,16 @@ fn next_delay(
     }
 }
 
-/// A pseudo-random factor in `[0.75, 1.0)` derived deterministically from
-/// `seed`. Used to jitter the backoff delay so repeated failures across
-/// instances do not synchronise. Pure: no I/O, fully unit-testable. The
-/// `splitmix64` bijection (public-domain Stafford constants) spreads
-/// consecutive seeds uniformly; `rand` is deliberately avoided so the jitter
-/// stays deterministic in `seed` (reproducible and unit-testable).
-fn jitter_factor(seed: u64) -> f64 {
-    let mut z = seed.wrapping_add(0x9E3779B97F4A7C15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
-    z ^= z >> 31;
-    // Map the high 53 bits to [0, 1) (lossless in f64), then to [0.75, 1.0).
-    let frac = (z >> 11) as f64 / (1u64 << 53) as f64;
-    0.75 + 0.25 * frac
+/// A pseudo-random factor in `[0.75, 1.0)` used to jitter the backoff delay so
+/// repeated failures across instances do not synchronise. Sampled with `rand`
+/// (not deterministic in a seed); see the test `jitter_factor_in_range`.
+fn jitter_factor() -> f64 {
+    rand::thread_rng().gen_range(0.75..1.0)
 }
 
-/// Scale `delay` by `jitter_factor(seed)`, i.e. into `[0.75, 1.0)` of it.
-/// Pure: no I/O.
-fn jittered(delay: Duration, seed: u64) -> Duration {
-    delay.mul_f64(jitter_factor(seed))
-}
-
-/// A seed for [`jitter_factor`]/[`jittered`] derived from the wall clock so
-/// successive backoff delays vary. Falls back to 0 if the clock is before the
-/// epoch (which does not happen in practice).
-fn jitter_seed() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
+/// Scale `delay` by `jitter_factor()`, i.e. into `[0.75, 1.0)` of it.
+fn jittered(delay: Duration) -> Duration {
+    delay.mul_f64(jitter_factor())
 }
 
 fn now_epoch() -> u64 {
@@ -500,54 +473,27 @@ mod tests {
     }
 
     #[test]
-    fn jitter_factor_in_range_for_many_seeds() {
-        for seed in 0..1024u64 {
-            let f = jitter_factor(seed);
-            assert!(
-                (0.75..1.0).contains(&f),
-                "seed {seed} -> {f}, out of [0.75, 1.0)"
-            );
-        }
-    }
-
-    #[test]
-    fn jitter_factor_is_deterministic() {
-        for seed in [0u64, 1, 42, 999, u64::MAX, u64::MAX / 2] {
-            assert_eq!(jitter_factor(seed), jitter_factor(seed), "seed {seed}");
-        }
-    }
-
-    #[test]
-    fn jitter_factor_never_reaches_one() {
-        // The upper bound is exclusive; the full mapped range stays below 1.0.
-        for seed in 0..10_000u64 {
-            assert!(jitter_factor(seed) < 1.0, "seed {seed} >= 1.0");
-        }
-    }
-
-    #[test]
-    fn jitter_factor_lower_bound() {
-        for seed in 0..10_000u64 {
-            assert!(jitter_factor(seed) >= 0.75, "seed {seed} < 0.75");
+    fn jitter_factor_in_range() {
+        for _ in 0..1024 {
+            let f = jitter_factor();
+            assert!((0.75..1.0).contains(&f), "{f} out of [0.75, 1.0)");
         }
     }
 
     #[test]
     fn jittered_scales_into_range() {
         let base = Duration::from_secs(100);
-        for seed in 0..1024u64 {
-            let d = jittered(base, seed);
+        for _ in 0..1024 {
+            let d = jittered(base);
             // [75s, 100s): strictly below base (always jittered), at least 0.75x.
-            assert!(d >= Duration::from_secs(75), "seed {seed} < 75s");
-            assert!(d < base, "seed {seed} >= base (no jitter)");
+            assert!(d >= Duration::from_secs(75), "{d:?} < 75s");
+            assert!(d < base, "{d:?} >= base (no jitter)");
         }
     }
 
     #[test]
     fn jittered_zero_is_zero() {
-        for seed in [0u64, 7, 1234] {
-            assert_eq!(jittered(Duration::ZERO, seed), Duration::ZERO);
-        }
+        assert_eq!(jittered(Duration::ZERO), Duration::ZERO);
     }
 
     #[test]
