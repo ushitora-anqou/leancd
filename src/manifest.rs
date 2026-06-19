@@ -129,8 +129,7 @@ fn expand_value(value: Value, out: &mut Vec<RawManifest>) -> Result<()> {
 
 /// Recursively scan a directory for `*.yaml`/`*.yml` files and parse them all.
 pub async fn parse_dir(root: &Path) -> Result<Vec<RawManifest>> {
-    let mut files: Vec<PathBuf> = Vec::new();
-    collect_yaml_files(root, &mut files)?;
+    let files = collect_yaml_files(root)?;
     let mut out = Vec::new();
     for file in files {
         let contents = tokio::fs::read_to_string(&file).await?;
@@ -190,27 +189,24 @@ pub async fn parse_paths(roots: &[PathBuf]) -> Result<Vec<RawManifest>> {
     Ok(out)
 }
 
-fn collect_yaml_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(Error::Io(e)),
-    };
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        let ft = entry.file_type()?;
-        if ft.is_dir() {
-            collect_yaml_files(&path, out)?;
-        } else if ft.is_file() {
-            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                if ext == "yaml" || ext == "yml" {
-                    out.push(path);
-                }
+/// Collect all `*.yaml`/`*.yml` files under `dir` recursively, via a glob, in a
+/// sorted, deduplicated order so parsing is deterministic.
+fn collect_yaml_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    for ext in ["yaml", "yml"] {
+        let pattern = dir.join(format!("**/*.{ext}"));
+        let matched = glob::glob(&pattern.to_string_lossy())
+            .map_err(|e| Error::Config(format!("invalid manifest glob pattern: {e}")))?;
+        for entry in matched {
+            let path = entry.map_err(|e| Error::Io(e.into_error()))?;
+            if path.is_file() {
+                files.push(path);
             }
         }
     }
-    Ok(())
+    files.sort();
+    files.dedup();
+    Ok(files)
 }
 
 /// Read a single `metadata.annotations` entry from a manifest, or `None` when

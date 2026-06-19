@@ -15,6 +15,12 @@ mod common;
 use common::manifests;
 use std::time::Duration;
 
+/// Parse the unified `state` JSON value stored in a state ConfigMap's `data`.
+fn state_json(cm: &serde_json::Value) -> serde_json::Value {
+    serde_json::from_str(cm["data"]["state"].as_str().expect("`state` key present"))
+        .expect("`state` value is valid JSON")
+}
+
 /// Scenario 1: the first sync applies a mix of namespaced and cluster-scoped
 /// resources, each carrying the managed-by label, and writes sync state.
 #[tokio::test(flavor = "current_thread")]
@@ -55,11 +61,8 @@ async fn initial_apply() {
     );
 
     let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
-    let count: u64 = st["data"]["sync_count"]
-        .as_str()
-        .expect("sync_count present")
-        .parse()
-        .expect("sync_count numeric");
+    let s = state_json(&st);
+    let count: u64 = s["sync_count"].as_u64().expect("sync_count numeric");
     assert!(count >= 1, "sync_count should be >= 1, got {count}");
 }
 
@@ -242,22 +245,15 @@ async fn state_configmap() {
     assert!(common::leancd::sync(&args).success);
 
     let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
-    let data = st["data"].as_object().expect("state has data");
-    let sha = data["last_sha"].as_str().expect("last_sha present");
+    let s = state_json(&st);
+    let sha = s["last_sha"].as_str().expect("last_sha present");
     assert!(!sha.is_empty(), "last_sha must be non-empty");
-    let count: u64 = data["sync_count"]
-        .as_str()
-        .expect("sync_count present")
-        .parse()
-        .expect("sync_count numeric");
+    let count: u64 = s["sync_count"].as_u64().expect("sync_count numeric");
     assert!(count >= 1);
-    let managed: u64 = data["managed_count"]
-        .as_str()
-        .expect("managed_count present")
-        .parse()
-        .expect("managed_count numeric");
+    let managed: u64 = s["managed_count"].as_u64().expect("managed_count numeric");
     assert!(managed >= 1);
-    let applied = data["applied"].as_str().expect("applied present");
+    // `applied` is a JSON array of ResourceKey objects in the unified state.
+    let applied = serde_json::to_string(&s["applied"]).expect("applied present");
     assert!(
         applied.contains("ConfigMap"),
         "applied must list ConfigMap: {applied}"
@@ -655,7 +651,8 @@ async fn git_unreachable_records_error() {
     );
 
     let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
-    let err = st["data"]["last_error"].as_str();
+    let s = state_json(&st);
+    let err = s["last_error"].as_str();
     assert!(err.is_some(), "last_error should be recorded");
     assert!(!err.unwrap().is_empty(), "last_error should be non-empty");
 }
@@ -750,7 +747,8 @@ async fn presync_failure_aborts_main() {
     );
 
     let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
-    let err = st["data"]["last_error"]
+    let s = state_json(&st);
+    let err = s["last_error"]
         .as_str()
         .expect("last_error should be recorded");
     assert!(
@@ -840,9 +838,8 @@ async fn hook_not_in_applied_set() {
     assert!(common::leancd::sync(&args).success);
 
     let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
-    let applied = st["data"]["applied"]
-        .as_str()
-        .expect("applied set present in state");
+    let applied =
+        serde_json::to_string(&state_json(&st)["applied"]).expect("applied set present in state");
     assert!(
         applied.contains("hh-d-cm"),
         "applied set must list the ConfigMap: {applied}"

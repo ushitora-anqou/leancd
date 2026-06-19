@@ -29,39 +29,16 @@ pub struct State {
 
 impl State {
     pub fn to_data(&self) -> BTreeMap<String, String> {
+        let json = serde_json::to_string(self).unwrap_or_else(|_| "{}".into());
         let mut m = BTreeMap::new();
-        if let Some(s) = &self.last_sha {
-            m.insert("last_sha".into(), s.clone());
-        }
-        if let Some(e) = self.last_sync_epoch {
-            m.insert("last_sync_epoch".into(), e.to_string());
-        }
-        m.insert("sync_count".into(), self.sync_count.to_string());
-        if let Some(e) = &self.last_error {
-            m.insert("last_error".into(), e.clone());
-        }
-        m.insert("drift_count".into(), self.drift_count.to_string());
-        m.insert("managed_count".into(), self.managed_count.to_string());
-        m.insert(
-            "applied".into(),
-            serde_json::to_string(&self.applied).unwrap_or_else(|_| "[]".into()),
-        );
+        m.insert("state".into(), json);
         m
     }
 
     pub fn from_data(data: Option<&BTreeMap<String, String>>) -> Self {
-        let g = |k: &str| data.and_then(|d| d.get(k)).cloned();
-        Self {
-            last_sha: g("last_sha").filter(|s| !s.is_empty()),
-            last_sync_epoch: g("last_sync_epoch").and_then(|s| s.parse().ok()),
-            sync_count: g("sync_count").and_then(|s| s.parse().ok()).unwrap_or(0),
-            last_error: g("last_error").filter(|s| !s.is_empty()),
-            drift_count: g("drift_count").and_then(|s| s.parse().ok()).unwrap_or(0),
-            managed_count: g("managed_count").and_then(|s| s.parse().ok()).unwrap_or(0),
-            applied: g("applied")
-                .and_then(|s| serde_json::from_str(&s).ok())
-                .unwrap_or_default(),
-        }
+        data.and_then(|d| d.get("state"))
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
     }
 }
 
@@ -168,22 +145,24 @@ mod tests {
     }
 
     #[test]
-    fn empty_last_sha_is_treated_as_absent() {
+    fn legacy_per_key_data_is_ignored() {
+        // The unified "state" JSON key replaces the legacy per-field keys; an
+        // old ConfigMap written field-by-field is now read as the default state.
         let mut data = BTreeMap::new();
-        data.insert("last_sha".into(), "".into());
-        data.insert("sync_count".into(), "1".into());
+        data.insert("last_sha".into(), "abc".into());
+        data.insert("sync_count".into(), "5".into());
         let s = State::from_data(Some(&data));
-        // An empty SHA must not be mistaken for a real commit.
         assert_eq!(s.last_sha, None);
-        assert_eq!(s.sync_count, 1);
+        assert_eq!(s.sync_count, 0);
     }
 
     #[test]
-    fn corrupt_applied_falls_back_to_empty() {
+    fn corrupt_state_json_falls_back_to_default() {
         let mut data = BTreeMap::new();
-        data.insert("applied".into(), "not-json".into());
+        data.insert("state".into(), "not-json".into());
         let s = State::from_data(Some(&data));
         assert!(s.applied.is_empty());
+        assert_eq!(s.sync_count, 0);
     }
 
     #[test]
