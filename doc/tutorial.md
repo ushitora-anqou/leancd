@@ -339,6 +339,8 @@ from step 4c (its data is on an `emptyDir`, so nothing persists).
 
 ## 14. Next steps
 
+- [`./migration-from-argocd.md`](./migration-from-argocd.md) — migrating an
+  Argo CD-managed cluster to leancd.
 - [`./user-manual.md`](./user-manual.md) — every flag, tuning, troubleshooting.
 - [`./architecture.md`](./architecture.md) — how reconciliation, drift, and
   prune actually work, and why leancd is shaped this way.

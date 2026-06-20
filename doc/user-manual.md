@@ -74,7 +74,10 @@ claims ownership of conflicting fields.
 
 leancd honours Helm hook annotations in **pre-rendered** manifests (i.e. YAML
 already produced by `helm template` or equivalent — leancd does not render
-charts). The semantics match Argo CD:
+charts). The semantics match Argo CD. Note that leancd does **not** read
+`argocd.argoproj.io/hook` or `argocd.argoproj.io/sync-wave`; when migrating from
+Argo CD, convert those to the `helm.sh/hook` equivalents (see
+[`./migration-from-argocd.md`](./migration-from-argocd.md) §8). The mapping is:
 
 - `helm.sh/hook: pre-install` / `pre-upgrade` run **before** the main apply;
   `post-install` / `post-upgrade` run **after** it (install and upgrade are
@@ -629,4 +632,6 @@ These are deliberately out of scope (see [`../README.md`](../README.md)):
 - [`./tutorial.md`](./tutorial.md) — hands-on deployment into a `kind` cluster.
 - [`./architecture.md`](./architecture.md) — how the implementation works and
   why it is shaped that way.
+- [`./migration-from-argocd.md`](./migration-from-argocd.md) — migrating an
+  Argo CD-managed cluster to leancd.
 - [`../bench/README.md`](../bench/README.md) — RSS benchmark.

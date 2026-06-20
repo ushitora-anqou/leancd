@@ -161,6 +161,8 @@ single controller at a time.
 - [doc/user-manual.md](doc/user-manual.md) — complete feature reference
 - [doc/tutorial.md](doc/tutorial.md) — hands-on kind cluster walkthrough
 - [doc/architecture.md](doc/architecture.md) — how the implementation works
+- [doc/migration-from-argocd.md](doc/migration-from-argocd.md) — phased guide to
+  migrating an Argo CD-managed cluster to leancd
 
 ## License
 
