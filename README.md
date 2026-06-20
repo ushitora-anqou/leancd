@@ -144,10 +144,11 @@ deletion (the `foregroundDeletion` finalizer is observed across prune,
 teardown, and Helm-hook deletions).
 
 Every scenario is `#[ignore]`d (needs Docker + kind), so the suite stays out of
-`nix flake check` (no Docker in the sandbox) — the same status as `make bench`.
-Run it manually or in an external CI job; a failing scenario exits non-zero so a
-regression fails the run. See [`tests/e2e.rs`](tests/e2e.rs) and
-[`tests/common/`](tests/common/).
+`nix flake check` (no Docker in the sandbox). Unlike `make bench`, it *is* run in
+CI: the `e2e` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+enters the flake devShell and runs `make e2e` on every push and pull request. A
+failing scenario exits non-zero so a regression fails the run. See
+[`tests/e2e.rs`](tests/e2e.rs) and [`tests/common/`](tests/common/).
 
 Concurrency and field-conflict behaviour — `controller` (long-lived) and `sync`
 (manual, possibly in another Pod) may run at once, and server-side apply under a

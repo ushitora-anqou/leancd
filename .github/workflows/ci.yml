@@ -1,8 +1,18 @@
-# Continuous integration: the same gate as `make test` (nix flake check) but
-# runnable on any push/PR without a Nix dependency. Mirrors fmt + clippy
-# (-D warnings) + tests + cargo-deny (license/supply-chain) + cargo-audit
-# (advisories). The RSS benchmark (make bench) and e2e suite (make e2e) need a
-# kind cluster and Docker, so they stay out of CI — run them externally.
+# Continuous integration via Nix. Two parallel jobs, both on push (master) and
+# pull_request:
+#
+#   check — `nix flake check` (== make test): the canonical gate. Covers fmt
+#           (cargo + taplo, fail on diff), clippy (-D warnings), nextest,
+#           cargo-deny (licenses/supply chain), cargo-audit (advisories), build.
+#           Runs Nix directly; no devShell needed.
+#   e2e   — `make e2e` inside the flake devShell, against a host Docker + kind
+#           cluster with in-cluster Forgejo + leancd. The devShell (non-pure)
+#           supplies cargo/kind/kubectl/curl; Docker and git come from the host.
+#
+# The toolchain comes entirely from Nix (no per-language setup). Nix is installed
+# with DeterminateSystems/nix-installer-action, the Nix store is cached with
+# nix-community/cache-nix-action, and the e2e job enters the devShell with
+# nicknovitski/nix-develop.
 name: CI
 
 on:
@@ -11,38 +21,43 @@ on:
   pull_request:
 
 jobs:
-  ci:
+  check:
+    name: nix flake check (fmt / clippy / test / deny / audit)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@v7
         with:
-          components: rustfmt, clippy
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes: |
+            nix-${{ runner.os }}-
 
-      - name: Cache target/
-        uses: Swatinem/rust-cache@v2
+      - name: nix flake check (== make test)
+        run: nix flake check
 
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
+  e2e:
+    name: e2e (kind + in-cluster Forgejo + leancd)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+
+      - name: Cache Nix store
+        uses: nix-community/cache-nix-action@v7
         with:
-          tool: cargo-nextest
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('flake.lock') }}
+          restore-prefixes: |
+            nix-${{ runner.os }}-
 
-      - name: Format check
-        run: cargo fmt --check
+      - name: Enter flake devShell
+        uses: nicknovitski/nix-develop@v1
 
-      - name: Clippy (deny warnings)
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Tests
-        # nextest if available, else fall back to cargo test.
-        run: cargo nextest run --workspace || cargo test --workspace
-
-      - name: cargo-deny (licenses + supply chain)
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          arguments: --workspace
-
-      - name: cargo-audit (security advisories)
-        uses: rustsec/audit-check@v2.0.0
+      - name: End-to-end tests
+        run: make e2e
