@@ -131,3 +131,141 @@ pub fn configmap_keep(name: &str, ns: &str, data: &[(&str, &str)]) -> String {
     }
     s
 }
+
+/// A namespaced StatefulSet. Carries `volumeClaimTemplates` — the field most
+/// prone to server-default drift (resource defaults) — and a matching
+/// `serviceName`/selector. The companion headless Service is NOT generated:
+/// drift/prune comparison only needs the spec to apply, not the Pods to run.
+pub fn statefulset(name: &str, ns: &str, image: &str, replicas: u32) -> String {
+    let mut s = String::new();
+    s.push_str("apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n");
+    s.push_str(&format!("  name: {name}\n"));
+    if !ns.is_empty() {
+        s.push_str(&format!("  namespace: {ns}\n"));
+    }
+    s.push_str("spec:\n");
+    s.push_str(&format!("  replicas: {replicas}\n"));
+    s.push_str(&format!("  serviceName: \"{name}\"\n"));
+    s.push_str(&format!(
+        "  selector:\n    matchLabels:\n      app: \"{name}\"\n"
+    ));
+    s.push_str(&format!(
+        "  template:\n    metadata:\n      labels:\n        app: \"{name}\"\n"
+    ));
+    s.push_str("    spec:\n      containers:\n");
+    s.push_str(&format!(
+        "        - name: app\n          image: \"{image}\"\n          imagePullPolicy: IfNotPresent\n"
+    ));
+    s.push_str("  volumeClaimTemplates:\n    - metadata:\n        name: data\n      spec:\n        accessModes: [\"ReadWriteOnce\"]\n        resources:\n          requests:\n            storage: 1Gi\n");
+    s
+}
+
+/// A namespaced DaemonSet. `spec.updateStrategy` and node-affinity defaults are
+/// the server-injected fields most likely to read as drift.
+pub fn daemonset(name: &str, ns: &str, image: &str) -> String {
+    let mut s = String::new();
+    s.push_str("apiVersion: apps/v1\nkind: DaemonSet\nmetadata:\n");
+    s.push_str(&format!("  name: {name}\n"));
+    if !ns.is_empty() {
+        s.push_str(&format!("  namespace: {ns}\n"));
+    }
+    s.push_str("spec:\n");
+    s.push_str(&format!(
+        "  selector:\n    matchLabels:\n      app: \"{name}\"\n"
+    ));
+    s.push_str(&format!(
+        "  template:\n    metadata:\n      labels:\n        app: \"{name}\"\n"
+    ));
+    s.push_str("    spec:\n      containers:\n");
+    s.push_str(&format!(
+        "        - name: app\n          image: \"{image}\"\n          imagePullPolicy: IfNotPresent\n"
+    ));
+    s
+}
+
+/// A namespaced Service. Server-injected defaults (`clusterIP`, `ipFamilies`,
+/// `internalTrafficPolicy`, `sessionAffinity`, `ports[].protocol`) are the
+/// drift-prone fields; compare.sh::normalize strips the cluster-wide ones.
+pub fn service(name: &str, ns: &str, port: u32) -> String {
+    let mut s = String::new();
+    s.push_str("apiVersion: v1\nkind: Service\nmetadata:\n");
+    s.push_str(&format!("  name: {name}\n"));
+    if !ns.is_empty() {
+        s.push_str(&format!("  namespace: {ns}\n"));
+    }
+    s.push_str("spec:\n");
+    s.push_str(&format!("  selector:\n    app: \"{name}\"\n"));
+    s.push_str(&format!(
+        "  ports:\n    - port: {port}\n      targetPort: {port}\n"
+    ));
+    s
+}
+
+/// A namespaced Ingress (networking.k8s.io/v1). `pathType` defaults to
+/// `Prefix` server-side (k8s >= 1.18) — a classic drift trap when left unset.
+pub fn ingress(name: &str, ns: &str, host: &str, svc: &str, port: u32) -> String {
+    let mut s = String::new();
+    s.push_str("apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n");
+    s.push_str(&format!("  name: {name}\n"));
+    if !ns.is_empty() {
+        s.push_str(&format!("  namespace: {ns}\n"));
+    }
+    s.push_str("spec:\n");
+    s.push_str(&format!(
+        "  rules:\n    - host: \"{host}\"\n      http:\n        paths:\n          - path: /\n            pathType: Prefix\n            backend:\n              service:\n                name: \"{svc}\"\n                port:\n                  number: {port}\n"
+    ));
+    s
+}
+
+/// A namespaced PodDisruptionBudget specifying only `minAvailable` (not
+/// `maxUnavailable`) to exercise the server's one-of handling. The selector is
+/// non-empty (policy/v1 rejects an empty selector).
+pub fn pdb(name: &str, ns: &str, min_available: &str) -> String {
+    let mut s = String::new();
+    s.push_str("apiVersion: policy/v1\nkind: PodDisruptionBudget\nmetadata:\n");
+    s.push_str(&format!("  name: {name}\n"));
+    if !ns.is_empty() {
+        s.push_str(&format!("  namespace: {ns}\n"));
+    }
+    s.push_str("spec:\n");
+    s.push_str(&format!("  minAvailable: \"{min_available}\"\n"));
+    s.push_str(&format!(
+        "  selector:\n    matchLabels:\n      app: \"{name}\"\n"
+    ));
+    s
+}
+
+/// A namespaced HorizontalPodAutoscaler (autoscaling/v2) targeting a
+/// Deployment. `spec.metrics` gains server-injected defaults to watch for drift.
+pub fn hpa(name: &str, ns: &str, target_deploy: &str, min: u32, max: u32) -> String {
+    let mut s = String::new();
+    s.push_str("apiVersion: autoscaling/v2\nkind: HorizontalPodAutoscaler\nmetadata:\n");
+    s.push_str(&format!("  name: {name}\n"));
+    if !ns.is_empty() {
+        s.push_str(&format!("  namespace: {ns}\n"));
+    }
+    s.push_str("spec:\n");
+    s.push_str(&format!(
+        "  scaleTargetRef:\n    apiVersion: apps/v1\n    kind: Deployment\n    name: \"{target_deploy}\"\n"
+    ));
+    s.push_str(&format!("  minReplicas: {min}\n  maxReplicas: {max}\n"));
+    s.push_str("  metrics:\n    - type: Resource\n      resource:\n        name: cpu\n        target:\n          type: Utilization\n          averageUtilization: 80\n");
+    s
+}
+
+/// A namespaced Secret using `stringData` (the Git side). k8s converts it to
+/// base64 `data` on apply; drift.rs strips `stringData` before comparing
+/// (BUG 9). The harness compares Secret data key-sets, not values.
+pub fn secret_stringdata(name: &str, ns: &str, data: &[(&str, &str)]) -> String {
+    let mut s = String::new();
+    s.push_str("apiVersion: v1\nkind: Secret\nmetadata:\n");
+    s.push_str(&format!("  name: {name}\n"));
+    if !ns.is_empty() {
+        s.push_str(&format!("  namespace: {ns}\n"));
+    }
+    s.push_str("type: Opaque\nstringData:\n");
+    for (k, v) in data {
+        s.push_str(&format!("  {k}: \"{v}\"\n"));
+    }
+    s
+}

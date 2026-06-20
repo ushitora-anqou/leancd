@@ -136,6 +136,59 @@ async fn git_change_detection_and_steady_state() {
     );
 }
 
+/// Resources whose specs gain server-injected defaults (StatefulSet
+/// volumeClaimTemplates, DaemonSet updateStrategy, …) must NOT read as drift on
+/// a steady-state pass — leancd would otherwise re-apply forever. Guards the
+/// BUG 3/9 class at the cluster level: a no-op second sync leaves the
+/// StatefulSet's resourceVersion unchanged despite server defaults
+/// (storageClassName/resources) leancd never declared.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn drift_no_reapply_on_server_defaults() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("drift-sts");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "sts.yaml".into(),
+            manifests::statefulset("dr-sts", "default", "nginx", 1),
+        )],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    assert!(common::leancd::sync(&args).success, "first sync failed");
+    assert!(
+        common::wait::wait_for(
+            || common::kubectl::exists("default", "statefulset", "dr-sts"),
+            Duration::from_secs(15),
+            Duration::from_millis(500),
+        ),
+        "StatefulSet should appear after the first sync"
+    );
+
+    // Steady-state sync (no Git change) takes the drift-check path; server-
+    // injected defaults on the StatefulSet must NOT read as drift. The precise
+    // signal that nothing was re-applied is a stable resourceVersion.
+    let rv1 = common::kubectl::get_json("default", "statefulset", "dr-sts")["metadata"]
+        ["resourceVersion"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = common::leancd::sync(&args);
+    assert!(res.success, "steady-state sync failed: {}", res.stderr);
+    let rv2 = common::kubectl::get_json("default", "statefulset", "dr-sts")["metadata"]
+        ["resourceVersion"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        rv1, rv2,
+        "steady-state sync must not re-apply (StatefulSet server defaults read as drift)"
+    );
+}
+
 /// Scenario 3: an out-of-band deletion drifts the cluster; a short-poll
 /// controller detects it (via the drift-check path) and re-applies.
 #[tokio::test(flavor = "current_thread")]
@@ -938,6 +991,53 @@ async fn postsync_hook_after_main() {
     );
 }
 
+/// A PostSync hook that fails does NOT undo the main apply. The main resource
+/// is applied before PostSync runs; reconcile records the PostSync failure in
+/// `state.last_error` but the pass still returns Ok (PostSync failures are
+/// non-fatal). Guards the reconcile flow's PostSync contract that
+/// postsync_hook_after_main (the success case) does not cover.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn postsync_failure_keeps_main() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-postfail");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "cm.yaml".into(),
+                manifests::configmap("hh-pf-cm", "default", &[("k", "v")]),
+            ),
+            (
+                "post.yaml".into(),
+                manifests::job_hook("hh-pf-job", "default", "post-install", None, None, "exit 1"),
+            ),
+        ],
+    );
+    let res = common::leancd::sync(&env.sync_args(&fj.https_url(&env.repo)));
+    // The main apply happens before PostSync, so it survives the hook failure.
+    assert!(
+        common::kubectl::exists("default", "configmap", "hh-pf-cm"),
+        "main ConfigMap must remain applied even when the PostSync hook fails"
+    );
+    // PostSync failures are recorded, not fatal: the pass still succeeds.
+    assert!(
+        res.success,
+        "sync should succeed despite a PostSync hook failure: {}",
+        res.stderr
+    );
+    let job = common::kubectl::get_json("default", "job", "hh-pf-job");
+    assert_eq!(
+        job["status"]["failed"].as_i64(),
+        Some(1),
+        "post-sync hook should have failed: {:?}",
+        job["status"]
+    );
+}
+
 /// Scenario 24 (hook G): a PreSync Pod hook (not a Job) is awaited to its
 /// terminal `phase`; leancd waits for `phase=Succeeded` before applying main.
 #[tokio::test(flavor = "current_thread")]
@@ -1104,6 +1204,52 @@ async fn weight_ordering_aborts_early() {
         Some(1),
         "lower-weight hook should have failed: {:?}",
         low["status"]
+    );
+}
+
+/// Hooks sharing a `hook-weight` are all run — none is skipped — and the name
+/// tie-break that orders them is unit-tested in hooks::sort_by_weight. Here two
+/// PreSync hooks of equal weight both complete before main applies. (Argo CD
+/// runs Helm hooks by weight with the same all-run semantics; this is the
+/// leancd single-side guarantee of that behaviour.)
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn hook_weight_equal_all_run() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("hh-eqweight");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "a.yaml".into(),
+                manifests::job_hook("hh-ew-a", "default", "pre-install", Some(0), None, "exit 0"),
+            ),
+            (
+                "b.yaml".into(),
+                manifests::job_hook("hh-ew-b", "default", "pre-install", Some(0), None, "exit 0"),
+            ),
+            (
+                "cm.yaml".into(),
+                manifests::configmap("hh-ew-cm", "default", &[("k", "v")]),
+            ),
+        ],
+    );
+    let res = common::leancd::sync(&env.sync_args(&fj.https_url(&env.repo)));
+    assert!(res.success, "sync failed: {}", res.stderr);
+    assert!(
+        common::kubectl::exists("default", "job", "hh-ew-a"),
+        "equal-weight hook a must run"
+    );
+    assert!(
+        common::kubectl::exists("default", "job", "hh-ew-b"),
+        "equal-weight hook b must run (not skipped by the tie-break)"
+    );
+    assert!(
+        common::kubectl::exists("default", "configmap", "hh-ew-cm"),
+        "main must apply after the equal-weight hooks"
     );
 }
 
