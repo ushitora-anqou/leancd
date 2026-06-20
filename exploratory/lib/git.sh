@@ -53,33 +53,48 @@ wait_sync() {
     sha="$(head_sha)"
     kc_argo patch application compare -n argocd --type merge \
         -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}' 2>/dev/null || true
-    log "nudging Argo CD + fixed wait ${timeout}s for convergence (HEAD ${sha:0:8})..."
-    # Fixed wait rather than polling _both_synced: leancd prunes+rewrites its
-    # state ConfigMap every pass (BUG 2) and kube API calls occasionally stall
-    # under leancd's perpetual re-apply load (BUG 3), which made the poll loop
-    # unreliable. leancd polls every 15s and Argo CD self-heals on refresh, so a
-    # 30s wait is enough for normal cases (60s for CRD establishment).
-    sleep "$timeout"
-    return 0
+    log "waiting for both controllers to converge on HEAD ${sha:0:8} (timeout ${timeout}s)..."
+    # Poll _both_synced until leancd's state.last_sha and Argo CD's sync.revision
+    # both equal HEAD. An earlier fixed-sleep workaround existed for BUG 2 (state
+    # CM prune churn) and BUG 3 (perpetual re-apply load); both are now fixed
+    # (state.rs carries no managed-by label so the state CM is not pruned, and
+    # drift.rs compares arrays element-wise by subset so steady state no longer
+    # re-applies forever), so the state ConfigMap is stable and the poll loop is
+    # reliable.
+    wait_for "$timeout" "both controllers synced to ${sha:0:8}" _both_synced "$sha"
 }
 
 _sync_diag() {
-    log "  leancd last_sha: $(kc_lean get configmap leancd-state -n app -o jsonpath='{.data.last_sha}' 2>/dev/null | cut -c1-12)"
+    log "  leancd last_sha: $(kc_lean get configmap leancd-state -n app -o jsonpath='{.data.state}' 2>/dev/null | jq -r '.last_sha // empty' 2>/dev/null | cut -c1-12)"
     log "  argocd status:   $(kc_argo get application compare -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null) rev=$(kc_argo get application compare -n argocd -o jsonpath='{.status.sync.revision}' 2>/dev/null | cut -c1-12)"
 }
 
 _both_synced() {
     local sha="$1"
-    local lean_sha argo_status argo_rev
-    # leancd prunes+rewrites its own state ConfigMap every pass (BUG 2), so the
-    # read can 404 in a narrow window. Retry a few times before giving up.
+    local lean_sha lean_drift argo_status argo_rev state_json
+    # State is the unified `.data.state` JSON blob (state.rs::to_data). The state
+    # CM is SSA-patched once per pass, so a read can race with a patch in a
+    # narrow window — retry a few times to get a non-empty read.
     local i
     for i in 1 2 3 4 5; do
-        lean_sha="$(kc_lean get configmap leancd-state -n app -o jsonpath='{.data.last_sha}' 2>/dev/null || true)"
+        state_json="$(kc_lean get configmap leancd-state -n app -o jsonpath='{.data.state}' 2>/dev/null || true)"
+        lean_sha="$(printf '%s' "$state_json" | jq -r '.last_sha // empty' 2>/dev/null || true)"
         [[ -n "$lean_sha" ]] && break
         sleep 1
     done
+    lean_drift="$(printf '%s' "$state_json" | jq -r '.drift_count // empty' 2>/dev/null || true)"
     argo_status="$(kc_argo get application compare -n argocd -o jsonpath='{.status.sync.status}' 2>/dev/null || true)"
     argo_rev="$(kc_argo get application compare -n argocd -o jsonpath='{.status.sync.revision}' 2>/dev/null || true)"
-    [[ "$lean_sha" == "$sha" && "$argo_status" == "Synced" && "$argo_rev" == "$sha" ]]
+    # leancd is converged only when it has BOTH seen HEAD and its drift-check
+    # pass reports no drifts. A full-apply pass sets last_sha=HEAD before the
+    # CRD-established CRs have all applied (they fail until the CRD is
+    # established, then recover on the next drift→re-apply pass); waiting for
+    # drift_count==0 ensures every Git resource is actually live before we
+    # compare. Argo CD's `Synced` is NOT required: many resources leave Argo CD
+    # OutOfSync on server-injected defaults it has no ignoreDifferences for
+    # (StatefulSet volumeClaimTemplates, Service clusterIP, …) even after a
+    # correct SSA apply; its revision matching HEAD means it has seen the commit
+    # and its automated sync has applied. Final-state equality is then checked
+    # directly by compare_resource.
+    [[ "$lean_sha" == "$sha" && "$lean_drift" == "0" && "$argo_rev" == "$sha" ]]
 }

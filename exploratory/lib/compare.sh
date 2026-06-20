@@ -3,34 +3,34 @@
 # diff them, ignoring manager-specific and server-injected fields.
 
 # Normalize one k8s object read from stdin (kubectl -o json). Strips status,
-# server-injected metadata, and manager-specific annotations/labels so a
-# leancd-managed object and an argocd-managed object can be compared.
+# server-injected metadata, manager-specific annotations/labels, and the
+# server-default fields k8s injects into pod specs, so a leancd-managed object
+# and an argocd-managed object can be compared.
+#
+# NORMALIZE_PROFILE (env) tunes how aggressively chart/operator-specific noise
+# is stripped. The semantics intentionally mirror leancd's own drift checker
+# (src/drift.rs::spec_subset / is_k8s_zero_value) so the harness and leancd
+# agree on what counts as a server default:
+#   vm      (default) additionally drop VictoriaMetrics-operator annotations and
+#           content hashes — the operator injects these at runtime, not from
+#           Git, so they legitimately differ across the two clusters. Used by
+#           the vm-stack scenarios (S1-S10).
+#   minimal strip only the universally server/manager-injected fields below.
+#           Used by the minimal-manifest and non-VM chart scenarios (S11+).
 normalize() {
     jq '
-      del(
-        .status,
-        .metadata.managedFields,
-        .metadata.resourceVersion,
-        .metadata.uid,
-        .metadata.generation,
-        .metadata.creationTimestamp,
-        .metadata.selfLink,
-        .metadata.ownerReferences,
-        .metadata.clusterName,
-        .metadata.finalizers,
-        .metadata.generateName
-      )
+      def stripContainers: map(del(.resources?, .imagePullPolicy?,
+        .terminationMessagePath?, .terminationMessagePolicy?, .volumeMounts?));
+      del(.status, .metadata.managedFields, .metadata.resourceVersion, .metadata.uid,
+          .metadata.generation, .metadata.creationTimestamp, .metadata.selfLink,
+          .metadata.ownerReferences, .metadata.clusterName, .metadata.finalizers,
+          .metadata.generateName)
       | if (.metadata.annotations // null) == null then . else
           .metadata.annotations |= with_entries(select(
             (.key != "argocd.argoproj.io/tracking-id")
             and (.key != "argocd.argoproj.io/last-applied-configuration")
             and (.key != "kubectl.kubernetes.io/last-applied-configuration")
             and (.key != "deployment.kubernetes.io/revision")
-            # VM/operator-injected content hashes + Grafana checksums legitimately
-            # differ across the two clusters (operator-generated, not from Git).
-            and ((.key | startswith("checksum/")) | not)
-            and ((.key | startswith("operator.victoriametrics.com/")) | not)
-            and ((.key | startswith("victoriametrics.com/")) | not)
           ))
         end
       | if (.metadata.labels // null) == null then . else
@@ -46,15 +46,40 @@ normalize() {
             .spec.externalTrafficPolicy?, .spec.ipFamilies?, .spec.ipFamilyPolicy?,
             .spec.internalTrafficPolicy?, .spec.sessionAffinity?,
             .spec.allocateLoadBalancerNodePorts?, .spec.healthCheckNodePort?)
-      | (if (.spec.template.spec.containers // null) == null then . else
-           .spec.template.spec.containers |= map(del(.resources?, .imagePullPolicy?,
-             .terminationMessagePath?, .terminationMessagePolicy?, .volumeMounts?))
-         end)
+      # Strip server-default fields from every pod-spec container list the object
+      # may carry: workloads under .spec.template.spec (Deployment/StatefulSet/
+      # DaemonSet/Job), bare Pods under .spec, and CronJob jobTemplates. k8s
+      # injects resources/imagePullPolicy/... into every container; the Git
+      # manifest need not declare them, so they are noise (BUG 3 class).
+      | if (.spec.template.spec.containers // null) != null then
+          .spec.template.spec.containers |= stripContainers else . end
+      | if (.spec.template.spec.initContainers // null) != null then
+          .spec.template.spec.initContainers |= stripContainers else . end
+      | if (.spec.containers // null) != null then
+          .spec.containers |= stripContainers else . end
+      | if (.spec.initContainers // null) != null then
+          .spec.initContainers |= stripContainers else . end
+      | if (.spec.jobTemplate.spec.template.spec.containers // null) != null then
+          .spec.jobTemplate.spec.template.spec.containers |= stripContainers else . end
       | del(.spec.template?.spec?.restartPolicy?, .spec.template?.spec?.dnsPolicy?,
             .spec.template?.spec?.schedulerName?, .spec.template?.spec?.securityContext?,
             .spec.template?.spec?.terminationGracePeriodSeconds?,
             .spec.template?.spec?.enableServiceLinks?, .spec.strategy?,
             .spec.progressDeadlineSeconds?, .spec.revisionHistoryLimit?)
+      | if $ENV.NORMALIZE_PROFILE != "minimal" then
+          (if (.metadata.annotations // null) == null then . else
+             .metadata.annotations |= with_entries(select(
+               ((.key | startswith("checksum/")) | not)
+               and ((.key | startswith("operator.victoriametrics.com/")) | not)
+               and ((.key | startswith("victoriametrics.com/")) | not)
+             ))
+           end)
+        else . end
+      # Re-drop now-empty annotations/labels: the profile step above may have
+      # emptied them (e.g. only tracking-id + checksum were present), and an
+      # empty object on one side vs an absent field on the other reads as noise.
+      | if ((.metadata.annotations // {}) | length) == 0 then del(.metadata.annotations) else . end
+      | if ((.metadata.labels // {}) | length) == 0 then del(.metadata.labels) else . end
     ' 2>/dev/null
 }
 

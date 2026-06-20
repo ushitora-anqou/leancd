@@ -23,18 +23,26 @@ leancd runs.
   manifest, `--server-side --force-conflicts`) into `argocd-compare`.
 - `deploy-leancd.sh` / `deploy-argocd.sh` — point each controller at the shared
   repo, syncing repo root into namespace `app` with Server-Side Apply.
-- `vm-stack/values.yaml` — kind-tuned chart overlay (`nameOverride: vmks`,
-  Grafana persistence off + admin password pinned, VMSingle 2Gi, dashboards and
-  VMRules kept ON).
-- `vm-stack/render.sh` — `helm show crds` + `helm template` into a single
-  `vm-stack.yaml` (CRDs first) in the repo workdir; reports doc/CRD counts and
-  largest-doc size.
+- `charts/<name>/` — one directory per compared Helm chart, each with a
+  `render.sh` (calls `lib/chart.sh`) and a kind-tuned `values.yaml`:
+  - `charts/vm-stack/` — VictoriaMetrics K8s Stack (`nameOverride: vmks`, Grafana
+    persistence off + admin password pinned, VMSingle 2Gi, dashboards + VMRules
+    ON).
+  - `charts/cert-manager/` — cert-manager (CRDs + webhooks + install hooks); a
+    second workload for hook-weight/delete-policy and CRD variety.
+- `lib/chart.sh` — generic `helm show crds` + `helm template` renderer (CRDs
+  first, then the rendered resources) shared by every `charts/*/render.sh`.
 - `manifests/` — leancd Deployment/RBAC/Secret, Argo CD AppProject/Application +
   repository Secret. `__FORGEJO_GIT_URL__` is substituted at deploy time.
 - `lib/common.sh` — shared constants, `kc_lean`/`kc_argo` wrappers, `wait_for`.
-- `lib/git.sh` — host-side git push/clone against Forgejo + `wait_sync`.
-- `lib/compare.sh` — `normalize`, `compare_resource`, `compare_secret`,
-  `compare_count` (normalized JSON diff / key-set / count between clusters).
+- `lib/git.sh` — host-side git push/clone against Forgejo + `wait_sync` (polls
+  until BOTH controllers see HEAD and leancd's `drift_count==0`).
+- `lib/compare.sh` — `normalize` (chart-profile-aware: `NORMALIZE_PROFILE=vm`
+  drops operator/checksum annotations, `minimal` does not), `compare_resource`,
+  `compare_secret`, `compare_count`.
+- `lib/safety.sh` — safety assertions beyond final-state equality:
+  `assert_drift_settled`, `assert_pruned`/`assert_kept`, `assert_field_reclaimed`
+  (SSA), `assert_hook_order`.
 - `run.sh` — runs the 10 VictoriaMetrics scenarios and writes `report.md`.
 - `report.md` — the generated comparison report.
 - `notes/bugs.md` — leancd bugs found during the run.

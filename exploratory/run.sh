@@ -8,10 +8,11 @@ set -u   # no -e / no pipefail: a scenario returning non-zero (e.g. a DIFF from
 source "$(dirname "$0")/lib/common.sh"
 source "$(dirname "$0")/lib/git.sh"
 source "$(dirname "$0")/lib/compare.sh"
+source "$(dirname "$0")/lib/safety.sh"
 
 REPORT_FILE="$EXPLORATORY_DIR/report.md"
 BUGS_FILE="$NOTES_DIR/bugs.md"
-VM_STACK_DIR="$EXPLORATORY_DIR/vm-stack"
+CHARTS_DIR="$EXPLORATORY_DIR/charts"
 
 report_header() {
     local doc_count=0 crd_count=0 biggest=0 argocd_image=unknown
@@ -70,9 +71,9 @@ snapshot() {
     echo
     echo "**[$label] leancd state** (ConfigMap \`app/leancd-state\`):"
     echo '```yaml'
-    kc_lean get configmap leancd-state -n app -o yaml 2>/dev/null \
-        | sed -n '/^data:/,/^status:/p' | grep -E 'last_sha|sync_count|managed_count|drift_count|last_error' \
-        | sed 's/^/  /' || echo "  (state ConfigMap absent)"
+    kc_lean get configmap leancd-state -n app -o jsonpath='{.data.state}' 2>/dev/null \
+        | jq -r '"  last_sha: \"\(.last_sha // "")\"\n  sync_count: \"\(.sync_count // "")\"\n  managed_count: \"\(.managed_count // "")\"\n  drift_count: \"\(.drift_count // "")\"\n  last_error: \"\(.last_error // "")\""' 2>/dev/null \
+        || echo "  (state ConfigMap absent)"
     echo '```'
     echo "**[$label] leancd recent log**:"
     echo '```'
@@ -345,13 +346,208 @@ scenario_10_teardown() {
     } | report_section 10 "Full teardown + pre-delete hook divergence"
 }
 
+# ===========================================================================
+# Scenario 11 — Standard resource kinds under the minimal profile
+# ===========================================================================
+# Runs after the VM teardown so namespace `app` is clean. Switches to
+# NORMALIZE_PROFILE=minimal (no VM-operator exclusions) and applies a mix of
+# standard kinds whose specs gain server-injected defaults (StatefulSet
+# volumeClaimTemplates, Service clusterIP, Ingress pathType, PDB one-of,
+# container defaults). Server defaults must NOT read as drift in either cluster.
+scenario_11_resource_kinds() {
+    export NORMALIZE_PROFILE=minimal
+    write_file kinds.yaml <<'EOF'
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: cmp-sts, namespace: app }
+spec:
+  replicas: 1
+  serviceName: cmp-sts
+  selector: { matchLabels: { app: cmp-sts } }
+  template:
+    metadata: { labels: { app: cmp-sts } }
+    spec:
+      containers:
+        - { name: app, image: leancd:latest, imagePullPolicy: IfNotPresent, command: ["/bin/sh","-c"], args: ["exit 0"] }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: [ReadWriteOnce], resources: { requests: { storage: 1Gi } } }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: { name: cmp-ds, namespace: app }
+spec:
+  selector: { matchLabels: { app: cmp-ds } }
+  template:
+    metadata: { labels: { app: cmp-ds } }
+    spec:
+      containers:
+        - { name: app, image: leancd:latest, imagePullPolicy: IfNotPresent, command: ["/bin/sh","-c"], args: ["exit 0"] }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: cmp-svc, namespace: app }
+spec:
+  selector: { app: cmp-sts }
+  ports: [ { port: 80, targetPort: 80 } ]
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: { name: cmp-ing, namespace: app }
+spec:
+  rules:
+    - host: cmp.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: cmp-svc, port: { number: 80 } } }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: { name: cmp-pdb, namespace: app }
+spec:
+  minAvailable: 1
+  selector: { matchLabels: { app: cmp-sts } }
+---
+apiVersion: v1
+kind: Secret
+metadata: { name: cmp-sec, namespace: app }
+type: Opaque
+stringData: { key: value }
+EOF
+    push_repo "scenario 11: standard resource kinds (STS/DS/Svc/Ingress/PDB/Secret)"
+    wait_sync 120
+    {
+        echo "Standard resource kinds under the minimal normalize profile. Server-default fields (clusterIP, pathType, storageClass, PDB one-of, container defaults) must not read as drift."
+        snapshot after
+        echo "**Resource comparison (expect MATCH in both clusters)**:"
+        compare_resource statefulset cmp-sts app
+        compare_resource daemonset cmp-ds app
+        compare_resource service cmp-svc app
+        compare_resource ingress cmp-ing app
+        compare_resource poddisruptionbudget cmp-pdb app
+        compare_secret cmp-sec app
+        echo "**Safety: leancd must have settled (drift_count==0, no re-apply loop)**:"
+        assert_drift_settled
+    } | report_section 11 "Standard resource kinds (server-default drift parity)"
+}
+
+# ===========================================================================
+# Scenario 20 — Helm hook-weight ordering (Argo CD parity)
+# ===========================================================================
+# argoproj.io/sync-wave is not implemented, but helm.sh/hook-weight plays the
+# same "order the sync" role. leancd sorts hooks ascending by weight then name
+# (hooks.rs::sort_by_weight), matching Helm/Argo CD. Two PreSync hooks at
+# distinct weights run in both clusters and the main ConfigMap applies after.
+scenario_20_hook_weight_parity() {
+    export NORMALIZE_PROFILE=minimal
+    reset_repo
+    write_file hooks.yaml <<'EOF'
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hook-w-minus5
+  namespace: app
+  annotations:
+    helm.sh/hook: "pre-install"
+    helm.sh/hook-weight: "-5"
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - { name: h, image: leancd:latest, imagePullPolicy: IfNotPresent, command: ["/bin/sh","-c"], args: ["exit 0"] }
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hook-w-plus5
+  namespace: app
+  annotations:
+    helm.sh/hook: "pre-install"
+    helm.sh/hook-weight: "5"
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - { name: h, image: leancd:latest, imagePullPolicy: IfNotPresent, command: ["/bin/sh","-c"], args: ["exit 0"] }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: hw-main, namespace: app }
+EOF
+    push_repo "scenario 20: pre-install hooks at weight -5 and +5"
+    wait_sync 120
+    {
+        echo "PreSync hooks at distinct weights. leancd runs Helm hooks in ascending weight (hooks.rs::sort_by_weight), matching Argo CD. Both hooks run in both clusters and the main ConfigMap applies after."
+        snapshot after
+        echo "**Hook-run presence (both clusters)**:"
+        for j in hook-w-minus5 hook-w-plus5; do
+            if exists_in lean job "$j" app; then echo "  [=] leancd: $j ran"; else echo "  [!] leancd: $j MISSING"; fi
+            if exists_in argo job "$j" app; then echo "  [=] argocd: $j ran"; else echo "  [!] argocd: $j MISSING"; fi
+        done
+        echo "**Main applied after hooks (expect MATCH)**:"
+        compare_resource configmap hw-main app
+        echo "**Safety: leancd ran hooks in non-decreasing weight (log scan)**:"
+        assert_hook_order PreSync
+    } | report_section 20 "Helm hook-weight ordering (Argo CD parity)"
+}
+
+# ===========================================================================
+# Scenario 21 — PostSync hook failure keeps main
+# ===========================================================================
+# A PostSync hook that fails must NOT undo the main apply. reconcile records the
+# failure in state.last_error but the pass returns Ok (non-fatal), so the main
+# ConfigMap stays applied in both clusters. (postsync_hook_after_main covers the
+# success case; this is the failure-case guard.)
+scenario_21_postsync_failure() {
+    export NORMALIZE_PROFILE=minimal
+    reset_repo
+    write_file postfail.yaml <<'EOF'
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pf-post
+  namespace: app
+  annotations:
+    helm.sh/hook: "post-install"
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - { name: h, image: leancd:latest, imagePullPolicy: IfNotPresent, command: ["/bin/sh","-c"], args: ["exit 1"] }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: pf-main, namespace: app }
+EOF
+    push_repo "scenario 21: post-install hook that fails"
+    wait_sync 120
+    {
+        echo "A PostSync hook that fails must NOT undo the main apply — reconcile records the failure (state.last_error) but the pass returns Ok (non-fatal), so the main ConfigMap stays applied in both clusters."
+        snapshot after
+        echo "**Main survives the PostSync failure (expect MATCH)**:"
+        compare_resource configmap pf-main app
+        echo "**PostSync hook ran and failed (leancd)**:"
+        if exists_in lean job pf-post app; then
+            echo "  [=] leancd: pf-post applied (failed=$(kc_lean get job pf-post -n app -o jsonpath='{.status.failed}' 2>/dev/null))"
+        else
+            echo "  [!] leancd: pf-post MISSING"
+        fi
+    } | report_section 21 "PostSync hook failure keeps main"
+}
+
 # ---- main ----
 # Order: cumulative scenarios first (S1-S8); then the state-mutating S9
 # (field-manager conflict on the VMSingle CR) and the terminal S10 (teardown).
 log "=== VictoriaMetrics comparison run starting ==="
 init_repo
 reset_repo
-bash "$VM_STACK_DIR/render.sh"
+bash "$CHARTS_DIR/vm-stack/render.sh"
 report_header
 scenario_01_initial  || true
 scenario_02_add_vmrule || true
@@ -363,4 +559,9 @@ scenario_07_child_recreate || true
 scenario_08_dashboards || true
 scenario_09_ssa_conflict || true
 scenario_10_teardown  || true
+# Minimal-profile, minimal-manifest scenarios (run after the VM teardown so the
+# app namespace is clean; these use NORMALIZE_PROFILE=minimal).
+scenario_11_resource_kinds || true
+scenario_20_hook_weight_parity || true
+scenario_21_postsync_failure || true
 log "=== run complete; report at $REPORT_FILE ==="

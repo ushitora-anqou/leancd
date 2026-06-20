@@ -1,0 +1,11 @@
+#################################################
+# cert-manager — leancd-vs-ArgoCD comparison    #
+# second workload. Renders into namespace `app`  #
+# (SYNC_NS) via `helm template --namespace app`. #
+# Tuned for a single-node kind cluster.          #
+#################################################
+
+# Install CRDs through the chart so `helm show crds` + `helm template` cover
+# them together (the comparison renders CRDs-first into one file). Without
+# this, cert-manager CRDs come from a dedicated chart and would be absent.
+installCRDs: true
