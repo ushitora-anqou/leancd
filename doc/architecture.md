@@ -310,8 +310,11 @@ persistent and in-process footprint minimal. The ConfigMap is named
 `<state-configmap>`
 (default `leancd-state`) in `<namespace>` (default `default`).
 
-`state::write` upserts the ConfigMap via SSA (under `field_manager`) and stamps
-the managed-by label on it; `state::read` returns `None` on a 404 (first run).
+`state::write` upserts the ConfigMap via SSA (under `field_manager`) and
+deliberately does NOT stamp the managed-by label on it — the prune safety-net
+lists live resources by that label, so an unlabelled state ConfigMap is
+invisible to prune and leancd will not delete its own state every pass (BUG 2);
+`state::read` returns `None` on a 404 (first run).
 The `State` struct round-trips to/from a `BTreeMap<String,String>` of plain
 string data:
 
