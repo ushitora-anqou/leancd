@@ -3,7 +3,7 @@
 ## IMPORTANT
 
 - **TDD (all three test layers)**: When adding a feature or fixing a bug, write a failing test first, confirm it fails, then implement the fix. Cover the change across **all three test layers** as appropriate — **unit tests** (`#[cfg(test)]` in each module), **integration tests** (cluster-free multi-module coverage under `tests/`), and **e2e tests** (`tests/e2e.rs`, a `kind` cluster with in-cluster Forgejo + leancd). Don't satisfy a change with a single layer when more apply.
-- **All tests must pass before finishing or committing**: Never mark a task done or run `git commit` until every layer is green — `cargo test` (unit + integration) **and** `make e2e` (e2e). Fix failures before moving on; never skip, `#[ignore]`, or work around a failing test.
+- **Run `nix flake check` before finishing or committing**: `nix flake check` (== `make test`) is the full CI gate — fmt (cargo + taplo), clippy (`-D warnings`), unit + integration tests (nextest), cargo-deny, cargo-audit. Never mark a task done or run `git commit` until it is green, **and** run `make e2e` for the e2e layer. Fix failures before moving on; never skip, `#[ignore]`, or work around a failing test.
 - **Pre-commit formatting**: Always run `make fmt` before `git commit`.
 - **Update documentation**: When adding or modifying a feature, update README.md and the `--help` output (clap `#[command]`/`#[arg]` attributes in `main.rs`) accordingly.
 
