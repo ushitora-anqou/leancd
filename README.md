@@ -28,7 +28,8 @@ benchmark (see [bench/](bench/)).
   (finishing the in-flight pass on SIGTERM); `SIGHUP` reloads `RUST_LOG`.
 - `leancd health` subcommand for `exec` liveness/readiness probes.
 - `leancd --version` and the startup log report the embedded git SHA.
-- Metrics exported over OTLP/HTTP (push), including `leancd_rss_bytes`.
+- Metrics exported over OTLP/HTTP (push), including `leancd_rss_bytes`; a ready
+  Grafana dashboard ships in [`dashboards/`](dashboards/).
 - Handles **all** resource kinds, including CRDs and cluster-scoped resources.
 
 ## Non-goals (kept out to stay small and light)

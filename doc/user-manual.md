@@ -465,6 +465,40 @@ OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 See the [Prometheus OpenTelemetry guide](https://prometheus.io/docs/guides/opentelemetry/)
 for the full `otlp:` block and resource-attribute promotion.
 
+### 7.2 Grafana dashboard
+
+A ready-made Grafana dashboard for leancd lives at
+[`dashboards/leancd-overview.json`](../dashboards/leancd-overview.json). It is a
+self-contained dashboard JSON (no provisioning sidecar required): import it from
+**Dashboards → New → Import → Upload JSON file**, pick your Prometheus data
+source for the `DS_PROMETHEUS` variable, and the panels below appear. The data
+source is a variable, so the same dashboard binds to whatever Prometheus you
+point it at.
+
+It covers all of leancd's metrics in one view:
+
+| Panel | Metric(s) | What it shows |
+|---|---|---|
+| RSS (memory budget ≤ 100MiB) | `leancd_rss_bytes` | Current RSS, thresholds at 80/100 MiB (the headline budget) |
+| RSS over time | `leancd_rss_bytes` | RSS trend with a 100MiB threshold line |
+| Sync error ratio (5m) | `leancd_sync_errors_total`, `leancd_sync_total` | `rate(errors[5m]) / rate(total[5m])` |
+| Time since last successful sync | `leancd_sync_last_success_timestamp_seconds` | `time() - last_success` — the same freshness signal `leancd health` uses |
+| Managed resources | `leancd_managed_resources` | Current managed-resource count |
+| Sync & error rate (5m) | `leancd_sync_total`, `leancd_sync_errors_total` | Per-second sync and error rate |
+| Drifted resources by kind | `leancd_drift_detected` | `sum by (kind) (...)` |
+| Helm hooks run in last hour | `leancd_hooks_total` | `sum by (phase, result) (increase(...[1h]))` |
+
+**Metric-name note.** The dashboard queries use the metric names leancd emits
+(`leancd_sync_total`, `leancd_rss_bytes`, …) directly. With the standard OTel
+Collector Prometheus exporter path (§7.1 A) those names appear unchanged. If
+your collector uses a non-default `translation_strategy` the suffixes may differ
+(e.g. unit suffixes or `_total` handling) — adjust the queries, or set
+`translation_strategy: UnderscoreEscapingWithSuffixes`. When
+`resource_to_telemetry_conversion` is enabled (as in the §7.1 example) the
+`service.name=leancd` resource attribute becomes a `service_name` label, so in a
+multi-service Prometheus add `{service_name="leancd"}` to each query to isolate
+leancd's series.
+
 ## 8. Tuning
 
 ### 8.1 Poll interval
