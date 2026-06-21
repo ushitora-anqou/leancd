@@ -25,13 +25,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Hardened Deployment**: Pod Security Standards `restricted` (non-root,
   read-only root FS, dropped capabilities, seccomp) with a `/tmp` `emptyDir`,
   plus `livenessProbe`/`readinessProbe` using `leancd health`.
-- **`deploy/leancd-namespaced.yaml`**: namespace-scoped RBAC template and a
+- **Namespaced RBAC posture**: the chart's `rbac.namespaced=true` mode binds
+  leancd's permissions to the namespace only (RoleBinding) and ships a
   `NetworkPolicy` (egress to kube-API/Git/OTLP/kube-dns, no ingress).
 - **CI/CD**: GitHub Actions CI (`fmt`/`clippy -D`/test/`cargo-deny`/
   `cargo-audit`) and a multi-arch (`amd64`+`arm64`) GHCR release workflow on
   `v*` tags.
 - **Metrics docs**: Prometheus ingestion guidance (Prometheus ≥ 3.0 native OTLP
   / OTel Collector) added to the user manual.
+
+### Changed — packaging
+
+- **Helm chart**: leancd now ships as a Helm chart at `charts/leancd/`, replacing
+  the static `deploy/leancd.yaml` and `deploy/leancd-namespaced.yaml` manifests.
+  The chart reproduces the cluster-scoped Deployment, RBAC, probes, and
+  PSS-restricted securityContext, adds a `rbac.namespaced` toggle (the former
+  namespaced mode + NetworkPolicy) and an optional Grafana dashboard ConfigMap
+  (`dashboards.enabled`, on by default, labelled `grafana_dashboard: "1"` for
+  kiwigrid sidecar autodiscovery). Migrate with `helm install leancd charts/leancd`.
+- **CI**: `nix flake check` now also runs `helm lint` and `helm template` structure
+  tests across the value variations; `make e2e` gained a
+  `helm_install_deploys_controller` scenario; the dev shell now provides `helm`.
 
 ### Notes
 

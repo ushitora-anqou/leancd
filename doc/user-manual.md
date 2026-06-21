@@ -221,7 +221,8 @@ leancd health                         # exit code reflects sync health
 ```
 
 It exposes no HTTP listener — wire it to a Deployment `livenessProbe`/
-`readinessProbe` as `exec: [leancd, health]` (see `deploy/leancd.yaml`).
+`readinessProbe` as `exec: [leancd, health]` (see the chart's
+[`templates/deployment.yaml`](../charts/leancd/templates/deployment.yaml)).
 
 ## 5. Configuration reference
 
@@ -471,13 +472,15 @@ for the full `otlp:` block and resource-attribute promotion.
 
 ### 7.2 Grafana dashboard
 
-A ready-made Grafana dashboard for leancd lives at
-[`dashboards/leancd-overview.json`](../dashboards/leancd-overview.json). It is a
-self-contained dashboard JSON (no provisioning sidecar required): import it from
-**Dashboards → New → Import → Upload JSON file**, pick your Prometheus data
-source for the `DS_PROMETHEUS` variable, and the panels below appear. The data
-source is a variable, so the same dashboard binds to whatever Prometheus you
-point it at.
+A ready-made Grafana dashboard for leancd ships in the chart at
+[`charts/leancd/dashboards/leancd-overview.json`](../charts/leancd/dashboards/leancd-overview.json).
+With `dashboards.enabled=true` (the default) the chart renders it as a ConfigMap
+labelled `grafana_dashboard: "1"`, which a Grafana running the kiwigrid dashboard
+sidecar (e.g. the VictoriaMetrics or `grafana` helm charts with sidecar dashboards
+enabled) imports automatically. To import it manually instead, use
+**Dashboards → New → Import → Upload JSON file**, pick your Prometheus data source
+for the `DS_PROMETHEUS` variable, and the panels below appear. The data source is
+a variable, so the same dashboard binds to whatever Prometheus you point it at.
 
 It covers all of leancd's metrics in one view:
 

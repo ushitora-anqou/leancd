@@ -406,11 +406,12 @@ footprint at collection time.
 ## 13. Deployment shape
 
 leancd runs as a Kubernetes `Deployment` (one replica, `strategy: Recreate`).
-The shipped manifest ([`../deploy/leancd.yaml`](../deploy/leancd.yaml)) creates:
+The shipped Helm chart ([`../charts/leancd/`](../charts/leancd/)) renders:
 
 - a `Namespace`, `ServiceAccount`, a broad `ClusterRole`/`ClusterRoleBinding`
   (leancd applies arbitrary kinds including CRDs and cluster-scoped resources,
-  so the default is broad — narrow it in production), and
+  so the default is broad — narrow it in production with `rbac.namespaced=true`),
+  and
 - the `Deployment` (image `leancd:latest`, `imagePullPolicy: IfNotPresent`,
   `args: ["controller"]`, `LEANCD_*` env, credentials via `envFrom` a Secret
   marked `optional`, resources request 32Mi/50m and limit 128Mi/200m).

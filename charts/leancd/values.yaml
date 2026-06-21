@@ -1,0 +1,126 @@
+# Default values for the leancd Helm chart.
+# leancd is a minimal, low-memory Kubernetes continuous-delivery controller
+# that syncs plain YAML manifests from a Git repository into the cluster.
+
+# --- Container image ---
+image:
+  # deploy/leancd.yaml parity. For the published multi-arch image set
+  # repository to ghcr.io/ushitora-anqou/leancd.
+  repository: leancd
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# --- Namespace ---
+namespace:
+  create: true                    # create the Namespace, else reuse an existing one
+  name: leancd
+
+# --- ServiceAccount ---
+serviceAccount:
+  create: true                    # create the ServiceAccount, else reuse an existing one
+  name: leancd
+
+# --- RBAC ---
+rbac:
+  # false = ClusterRole + ClusterRoleBinding (deploy/leancd.yaml parity).
+  # true  = ClusterRole(leancd-namespaced) + RoleBinding + NetworkPolicy
+  #         (deploy/leancd-namespaced.yaml parity: bind permissions to the
+  #         leancd namespace only, so a compromise cannot touch other namespaces).
+  namespaced: false
+  clusterRoleName: leancd
+  namespacedClusterRoleName: leancd-namespaced
+
+# --- NetworkPolicy (rbac.namespaced=true only) ---
+# leancd needs egress to kube-dns, the API server, the Git host, and the OTLP
+# collector. NetworkPolicy cannot select by FQDN, so tighten the CIDRs to your
+# environment before production use.
+networkPolicy:
+  kubeApiCidr: 10.0.0.0/8         # narrow to your cluster's service CIDR
+  kubeApiPort: 443
+  egressCidr: 0.0.0.0/0           # Git host(s) + OTLP collector; tighten before production
+  gitPorts: [443, 22]
+  otlpPort: 4318
+  dns:
+    namespace: kube-system
+    podSelector:
+      k8s-app: kube-dns
+    port: 53
+
+# --- Git credentials Secret ---
+git:
+  credentialsSecretName: leancd-git-credentials
+  credentialsOptional: true       # envFrom.secretRef.optional (omit the Secret for public repos)
+
+# --- leancd configuration (LEANCD_* env) ---
+config:
+  repoUrl: "https://github.com/example/manifests.git"
+  branch: main
+  path: "."
+  namespace: leancd               # LEANCD_NAMESPACE: where leancd keeps its state ConfigMap + Lease
+  pollInterval: 60s
+  workDir: /tmp/leancd-work
+  lockLeaseDurationSecs: "60"     # reconcile-pass mutual exclusion (Lease) — see lock.rs
+  lockWaitTimeoutSecs: "30"
+
+# --- Metrics (OTEL_* env) ---
+# leancd runs no HTTP listener; it pushes metrics over OTLP/HTTP to a collector
+# you bring yourself (e.g. the otel/opentelemetry-collector chart).
+metrics:
+  otlpEndpoint: "http://otel-collector:4318"
+  otlpProtocol: http/protobuf
+
+# --- Resources (RSS stays minimal; the limit leaves headroom — see bench/) ---
+resources:
+  limits:
+    memory: 128Mi
+    cpu: 200m
+  requests:
+    memory: 32Mi
+    cpu: 50m
+
+# --- Grafana dashboard ConfigMap ---
+dashboards:
+  enabled: true                   # ship the Grafana dashboard as a ConfigMap labelled grafana_dashboard
+  configMapName: leancd-grafana-dashboard
+  label: grafana_dashboard        # kiwigrid sidecar autodiscovery key
+
+# --- Extra env (appended after the above; last wins, so any LEANCD_*/OTEL_* can be overridden) ---
+extraEnv: []
+  # - name: OTEL_METRIC_EXPORT_INTERVAL
+  #   value: "5000"
+
+# --- Deployment common ---
+replicaCount: 1
+strategy: Recreate
+terminationGracePeriodSeconds: 30
+args: ["controller"]
+
+# --- Pod Security (PSS "restricted"; defaults match deploy/leancd.yaml) ---
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  runAsUser: 65532
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+# --- Probes (`leancd health`: exit 0=fresh, 1=never, 2=stale, 3=failing) ---
+livenessProbe:
+  exec:
+    command: ["leancd", "health"]
+  initialDelaySeconds: 10
+  periodSeconds: 30
+  failureThreshold: 3
+readinessProbe:
+  exec:
+    command: ["leancd", "health"]
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+# --- emptyDir /tmp (shallow checkout + SSH-key temp file stay writable under a read-only root) ---
+tmpVolume:
+  enabled: true

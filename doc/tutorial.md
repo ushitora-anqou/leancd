@@ -197,30 +197,26 @@ kubectl -n leancd create secret generic leancd-git-credentials \
   --from-file=GIT_SSH_KEY=$HOME/.ssh/id_ed25519
 ```
 
-> The `leancd` namespace does not exist yet — it is created by
-> `deploy/leancd.yaml` in step 6. Create it first so the Secret can land in it:
+> The `leancd` namespace does not exist yet — it is created by the chart in
+> step 6. Create it first so the Secret can land in it:
 >
 > ```sh
 > kubectl create namespace leancd
 > ```
 
-## 6. Apply the leancd manifests
+## 6. Install the leancd chart
 
-Edit [`../deploy/leancd.yaml`](../deploy/leancd.yaml) and set `LEANCD_REPO_URL`
-(and `LEANCD_BRANCH`/`LEANCD_PATH` if needed) to your repository. For the
-Forgejo repo:
-
-```yaml
-- name: LEANCD_REPO_URL
-  value: "http://forgejo.forgejo.svc.cluster.local:3000/leancd/manifests.git"
-```
-
-Then apply and wait for the Deployment to become available:
+Install the chart pointed at the Forgejo repo, from the repository root (it uses
+the locally-built `leancd:latest` you loaded into `kind` in step 3):
 
 ```sh
-kubectl apply -f deploy/leancd.yaml
+helm install leancd charts/leancd \
+  --namespace leancd --create-namespace \
+  --set config.repoUrl=http://forgejo.forgejo.svc.cluster.local:3000/leancd/manifests.git
 kubectl wait -n leancd --for=condition=Available deploy/leancd --timeout=240s
 ```
+
+(`config.branch`/`config.path` can be overridden the same way if needed.)
 
 If `wait` times out, check the Pod: `kubectl -n leancd describe pod -l
 app.kubernetes.io/name=leancd` and `kubectl -n leancd logs deploy/leancd`. The

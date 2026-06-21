@@ -69,6 +69,12 @@
             inherit cargoArtifacts;
           }
         );
+
+        # Helm chart sources. craneLib.cleanCargoSource (used for `src` above)
+        # keeps only Cargo-related files, so gather charts/ separately by
+        # extension — the same helper my-crate-toml-fmt uses for .toml. The
+        # .json picks up the Grafana dashboard definition.
+        chartSrc = pkgs.lib.sourceFilesBySuffices ./charts [".yaml" ".yml" ".json" ".tpl" ".txt"];
       in {
         formatter = pkgs.alejandra;
 
@@ -133,6 +139,78 @@
               cargoNextestPartitionsExtraArgs = "--no-tests=pass";
             }
           );
+
+          # Lint the Helm chart (validates Chart.yaml, values.schema.json, and
+          # that every template renders without errors).
+          helm-lint = pkgs.runCommand "helm-lint" {
+            nativeBuildInputs = [pkgs.kubernetes-helm];
+          } ''
+            cp -r ${chartSrc} charts
+            chmod -R u+w charts
+            helm lint charts/leancd
+            touch $out
+          '';
+
+          # Structure-test the chart: render several value variations with
+          # `helm template` and assert the expected resources/labels/env are
+          # present or absent. Uses only helm + grep (no extra plugin).
+          helm-template = pkgs.runCommand "helm-template" {
+            nativeBuildInputs = [pkgs.kubernetes-helm];
+          } ''
+            cp -r ${chartSrc} charts
+            chmod -R u+w charts
+
+            # (1) Default cluster posture.
+            helm template leancd charts/leancd > cluster.yaml
+            grep -q "kind: Deployment" cluster.yaml
+            grep -q "kind: ClusterRoleBinding" cluster.yaml
+            grep -q "kind: Namespace" cluster.yaml
+            if grep -q "kind: NetworkPolicy" cluster.yaml; then
+              echo "unexpected NetworkPolicy in cluster mode" >&2
+              exit 1
+            fi
+
+            # (2) Namespaced posture.
+            helm template leancd charts/leancd \
+              --set rbac.namespaced=true \
+              --set networkPolicy.kubeApiCidr=172.16.0.0/16 > ns.yaml
+            grep -q "kind: RoleBinding" ns.yaml
+            grep -q "kind: NetworkPolicy" ns.yaml
+            grep -q "172.16.0.0/16" ns.yaml
+            if grep -q "kind: ClusterRoleBinding" ns.yaml; then
+              echo "unexpected ClusterRoleBinding in namespaced mode" >&2
+              exit 1
+            fi
+
+            # (3) Dashboard ConfigMap ships the JSON + the grafana_dashboard label.
+            helm template leancd charts/leancd --set dashboards.enabled=true > dash.yaml
+            grep -q "kind: ConfigMap" dash.yaml
+            grep -q "grafana_dashboard" dash.yaml
+            grep -q "leancd-overview" dash.yaml
+
+            # (4) Dashboard disabled ships no ConfigMap.
+            helm template leancd charts/leancd --set dashboards.enabled=false > nodash.yaml
+            if grep -q "kind: ConfigMap" nodash.yaml; then
+              echo "unexpected ConfigMap with dashboards disabled" >&2
+              exit 1
+            fi
+
+            # (5) All LEANCD_*/OTEL_* envs and the credentials Secret are injected.
+            helm template leancd charts/leancd \
+              --set config.repoUrl=https://git.example.com/x.git > env.yaml
+            grep -q "LEANCD_REPO_URL" env.yaml
+            grep -q "LEANCD_LOCK_LEASE_DURATION_SECS" env.yaml
+            grep -q "OTEL_EXPORTER_OTLP_ENDPOINT" env.yaml
+            grep -q "https://git.example.com/x.git" env.yaml
+            grep -q "leancd-git-credentials" env.yaml
+
+            # (6) extraEnv override (last value wins).
+            helm template leancd charts/leancd \
+              --set-json 'extraEnv=[{"name":"OTEL_METRIC_EXPORT_INTERVAL","value":"5000"}]' > extra.yaml
+            grep -q "OTEL_METRIC_EXPORT_INTERVAL" extra.yaml
+
+            touch $out
+          '';
         };
 
         packages = {
@@ -155,6 +233,7 @@
             curl
             kind
             kubectl
+            kubernetes-helm
           ];
         };
       }

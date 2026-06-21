@@ -9,6 +9,7 @@ pub mod fgdelete;
 pub mod fixture;
 pub mod forgejo;
 pub mod git;
+pub mod helm;
 pub mod kubectl;
 pub mod leancd;
 pub mod manifests;

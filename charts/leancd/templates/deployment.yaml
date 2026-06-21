@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: leancd
+  namespace: {{ include "leancd.namespace" . }}
+  labels:
+    {{- include "leancd.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: {{ .Values.strategy }}
+  selector:
+    matchLabels:
+      {{- include "leancd.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "leancd.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "leancd.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: leancd
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            {{- toYaml .Values.args | nindent 12 }}
+          env:
+            # --- non-secret configuration (command-line args via env) ---
+            - name: LEANCD_REPO_URL
+              value: {{ .Values.config.repoUrl | quote }}
+            - name: LEANCD_BRANCH
+              value: {{ .Values.config.branch | quote }}
+            - name: LEANCD_PATH
+              value: {{ .Values.config.path | quote }}
+            - name: LEANCD_NAMESPACE
+              value: {{ .Values.config.namespace | quote }}
+            - name: LEANCD_POLL_INTERVAL
+              value: {{ .Values.config.pollInterval | quote }}
+            - name: LEANCD_WORK_DIR
+              value: {{ .Values.config.workDir | quote }}
+            # Reconcile-pass mutual exclusion: one pass at a time (cluster-wide)
+            # via a coordination.k8s.io/lease. See lock.rs.
+            - name: LEANCD_LOCK_LEASE_DURATION_SECS
+              value: {{ .Values.config.lockLeaseDurationSecs | quote }}
+            - name: LEANCD_LOCK_WAIT_TIMEOUT_SECS
+              value: {{ .Values.config.lockWaitTimeoutSecs | quote }}
+            # --- metrics: OTLP/HTTP push to an OpenTelemetry Collector ---
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.metrics.otlpEndpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .Values.metrics.otlpProtocol | quote }}
+            # --- extra/override env (appended last; last value wins) ---
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # --- secret configuration (only credentials, from a Secret) ---
+          envFrom:
+            - secretRef:
+                name: {{ .Values.git.credentialsSecretName }}
+                optional: {{ .Values.git.credentialsOptional }}
+          # Pod Security Standards "restricted": non-root, no privilege
+          # escalation, all capabilities dropped, read-only root filesystem.
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          # `leancd health` exec probe: exit 0=fresh, 1=never, 2=stale, 3=failing.
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          {{- if .Values.tmpVolume.enabled }}
+          # /tmp is an emptyDir so the shallow checkout and SSH-key temp file
+          # stay writable under a read-only root.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.tmpVolume.enabled }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      {{- end }}

@@ -1,0 +1,25 @@
+leancd has been installed as a controller in namespace {{ include "leancd.namespace" . }}.
+
+Wait for the Deployment to become Available:
+  kubectl -n {{ include "leancd.namespace" . }} wait --for=condition=Available deploy/leancd --timeout=240s
+
+Inspect the last sync state:
+  kubectl -n {{ include "leancd.namespace" . }} exec deploy/leancd -- leancd status
+
+{{- if .Values.git.credentialsOptional }}
+
+If your Git repository is private, create the credentials Secret referenced by
+the Deployment (it is optional, so a public repo needs none):
+  kubectl -n {{ include "leancd.namespace" . }} create secret generic {{ .Values.git.credentialsSecretName }} \
+    --from-literal=GIT_USERNAME=<user> --from-literal=GIT_PASSWORD=<token>
+  # For SSH instead:
+  #   --from-file=GIT_SSH_KEY=$HOME/.ssh/id_ed25519
+{{- end }}
+
+{{- if .Values.dashboards.enabled }}
+The Grafana dashboard is shipped as a ConfigMap labelled
+grafana_dashboard: "1". A Grafana instance running the kiwigrid dashboard
+sidecar (VictoriaMetrics / grafana helm charts with sidecar dashboards enabled)
+imports it automatically; otherwise import charts/leancd/dashboards/leancd-overview.json
+manually from Dashboards -> New -> Import.
+{{- end }}

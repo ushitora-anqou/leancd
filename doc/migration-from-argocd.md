@@ -179,17 +179,17 @@ argocd repo add http://forgejo.forgejo.svc.cluster.local:3000/leancd/manifests.g
 
 ### 3d. leancd
 
-Make a copy of `deploy/leancd.yaml` pointed at the Forgejo repo and the
-`leancd-managed` path (do **not** edit `deploy/` in the repo):
+Install the chart pointed at the Forgejo repo and the `leancd-managed` path:
 
 ```sh
-sed -e 's|https://github.com/example/manifests.git|http://forgejo.forgejo.svc.cluster.local:3000/leancd/manifests.git|' \
-    -e 's|value: "\."|value: "leancd-managed"|' \
-    deploy/leancd.yaml > /tmp/leancd-migration.yaml
 kubectl create namespace leancd
 kubectl -n leancd create secret generic leancd-git-credentials \
   --from-literal=GIT_USERNAME=leancd --from-literal=GIT_PASSWORD=leancd-e2e-pass
-kubectl apply -f /tmp/leancd-migration.yaml
+helm install leancd charts/leancd \
+  --namespace leancd --create-namespace \
+  --set config.repoUrl=http://forgejo.forgejo.svc.cluster.local:3000/leancd/manifests.git \
+  --set config.path=leancd-managed \
+  --set image.repository=leancd --set image.tag=latest
 kubectl -n leancd wait --for=condition=Available deploy/leancd --timeout=240s
 kubectl -n leancd logs deploy/leancd --tail=2
 # expect: reconciliation complete ... managed=0 ...   (owns nothing yet)

@@ -107,6 +107,7 @@ impl Drop for Fixture {
 fn check_prereqs() {
     let checks: &[(&str, &[&str])] = &[
         ("docker", &["--version"]),
+        ("helm", &["version"]),
         ("kind", &["version"]),
         ("kubectl", &["version", "--client"]),
         ("git", &["--version"]),
@@ -120,7 +121,7 @@ fn check_prereqs() {
             .unwrap_or(false);
         assert!(
             ok,
-            "make e2e requires: docker, kind, kubectl, git, curl. \
+            "make e2e requires: docker, helm, kind, kubectl, git, curl. \
              Missing or failing: {tool}"
         );
     }

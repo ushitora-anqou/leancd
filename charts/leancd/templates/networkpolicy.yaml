@@ -1,0 +1,54 @@
+{{- if .Values.rbac.namespaced }}
+# NetworkPolicy (namespaced posture only): leancd needs egress to (1) kube-dns
+# for name resolution, (2) the Kubernetes API server, (3) the Git repository,
+# and (4) the OTLP metrics collector. No ingress is needed (leancd exposes no
+# HTTP listener). Tighten the CIDRs to your environment before production.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: leancd-egress
+  namespace: {{ include "leancd.namespace" . }}
+  labels:
+    {{- include "leancd.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "leancd.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: [] # leancd exposes no inbound port
+  egress:
+    # DNS resolution (kube-dns in kube-system).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.dns.podSelector | nindent 14 }}
+      ports:
+        - protocol: UDP
+          port: {{ .Values.networkPolicy.dns.port }}
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.dns.port }}
+    # Kubernetes API server. Narrow the CIDR to your cluster's service CIDR.
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.kubeApiCidr }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.kubeApiPort }}
+    # Git (HTTPS 443 / SSH 22) and OTLP/HTTP collector (4318). Tighten the CIDR
+    # to your Git host(s) and collector address before production use.
+    - to:
+        - ipBlock:
+            cidr: {{ .Values.networkPolicy.egressCidr }}
+      ports:
+        {{- range .Values.networkPolicy.gitPorts }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.otlpPort }}
+{{- end }}

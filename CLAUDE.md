@@ -3,7 +3,7 @@
 ## IMPORTANT
 
 - **TDD (all three test layers)**: When adding a feature or fixing a bug, write a failing test first, confirm it fails, then implement the fix. Cover the change across **all three test layers** as appropriate — **unit tests** (`#[cfg(test)]` in each module), **integration tests** (cluster-free multi-module coverage under `tests/`), and **e2e tests** (`tests/e2e.rs`, a `kind` cluster with in-cluster Forgejo + leancd). Don't satisfy a change with a single layer when more apply.
-- **Run `nix flake check` before finishing or committing**: `nix flake check` (== `make test`) is the full CI gate — fmt (cargo + taplo), clippy (`-D warnings`), unit + integration tests (nextest), cargo-deny, cargo-audit. Never mark a task done or run `git commit` until it is green, **and** run `make e2e` for the e2e layer. Fix failures before moving on; never skip, `#[ignore]`, or work around a failing test.
+- **Run `nix flake check` before finishing or committing**: `nix flake check` (== `make test`) is the full CI gate — fmt (cargo + taplo), clippy (`-D warnings`), unit + integration tests (nextest), cargo-deny, cargo-audit, helm lint, helm template. Never mark a task done or run `git commit` until it is green, **and** run `make e2e` for the e2e layer. Fix failures before moving on; never skip, `#[ignore]`, or work around a failing test.
 - **Pre-commit formatting**: Always run `make fmt` before `git commit`.
 - **Update documentation**: When adding or modifying a feature, update README.md and the `--help` output (clap `#[command]`/`#[arg]` attributes in `main.rs`) accordingly.
 
@@ -36,10 +36,10 @@ make e2e                       # end-to-end tests: kind cluster with in-cluster
                                #   scenario asserts final consistency under a
                                #   concurrent controller + sync.
 make test                      # == nix flake check : full CI (fmt, clippy -D warnings,
-                               #   nextest, cargo-deny, cargo-audit)
+                               #   nextest, cargo-deny, cargo-audit, helm lint, helm template)
 ```
 
-The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provides the toolchain, plus `curl`, `kind`, `kubectl` in the dev shell. `make test` runs the complete CI gate (clippy denies warnings, `cargo-deny` allows any license compatible with the project's Apache-2.0 — permissive licenses plus MPL-2.0, strong copyleft excluded; see `deny.toml`).
+The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provides the toolchain, plus `curl`, `kind`, `kubectl`, `helm` in the dev shell. `make test` runs the complete CI gate (clippy denies warnings, `cargo-deny` allows any license compatible with the project's Apache-2.0 — permissive licenses plus MPL-2.0, strong copyleft excluded; see `deny.toml`).
 
 **RSS benchmark** (`make bench` / `./bench/bench.sh`): spins up a `kind` cluster, generates N namespaces × Deployment/StatefulSet/ConfigMap/Service into a local Git repo, runs a release build of leancd against it, and samples two footprints in parallel: the **self** RSS (leancd's own process, read via `ps`) and the **tree** RSS (leancd + git/ssh subprocesses, summed via `ps` — shared pages double-counted, so deliberately conservative). It fails if any of the self/tree peak/idle RSS ≥ the budget. Tunables: `BENCH_NAMESPACE_COUNT` (default 15), `RSS_BUDGET_MIB` (default 100), `BENCH_SAMPLE_SECS` (default 30), `KIND_CLUSTER_NAME`.
 

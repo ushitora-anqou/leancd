@@ -50,5 +50,11 @@ docker pull ghcr.io/<owner>/leancd:X.Y.Z
 ```
 
 `<owner>` is the GitHub repository owner in **lowercase** (GHCR requires
-lowercase). Point `deploy/leancd.yaml`'s `image:` at this reference instead of
-the local `leancd:latest`.
+lowercase). Point the chart's `image.repository`/`image.tag` values at this
+reference instead of the local `leancd:latest`:
+
+```sh
+helm install leancd charts/leancd --namespace leancd --create-namespace \
+  --set image.repository=ghcr.io/<owner>/leancd --set image.tag=X.Y.Z \
+  --set config.repoUrl=<your repo>
+```

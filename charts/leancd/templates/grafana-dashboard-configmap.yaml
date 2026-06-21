@@ -1,0 +1,18 @@
+{{- if .Values.dashboards.enabled }}
+# Grafana dashboard. A ConfigMap labelled `grafana_dashboard: "1"` is imported
+# automatically by a Grafana instance running the kiwigrid dashboard sidecar
+# (e.g. the VictoriaMetrics or grafana helm charts with sidecar dashboards
+# enabled). leancd itself runs no HTTP listener; metrics reach Grafana via the
+# OTLP collector you point it at (metrics.otlpEndpoint).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.dashboards.configMapName }}
+  namespace: {{ include "leancd.namespace" . }}
+  labels:
+    {{- include "leancd.labels" . | nindent 4 }}
+    {{ .Values.dashboards.label }}: "1"
+data:
+  leancd-overview.json: |
+    {{- .Files.Get "dashboards/leancd-overview.json" | nindent 4 }}
+{{- end }}

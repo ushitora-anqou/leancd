@@ -1,0 +1,67 @@
+{{- if .Values.rbac.namespaced }}
+# namespaced posture: a ClusterRole bound only to the leancd namespace via a
+# RoleBinding (the former deploy/leancd-namespaced.yaml mode), so a compromise
+# of leancd cannot touch other namespaces.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.rbac.namespacedClusterRoleName }}
+  labels:
+    {{- include "leancd.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - nonResourceURLs: ["*"]
+    verbs: ["*"]
+---
+# Grant leancd its permissions in its own namespace (state ConfigMap + the
+# reconcile-exclusion Lease — coordination.k8s.io/leases, created in this
+# namespace by lock.rs).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: leancd
+  namespace: {{ include "leancd.namespace" . }}
+  labels:
+    {{- include "leancd.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.rbac.namespacedClusterRoleName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "leancd.serviceAccountName" . }}
+    namespace: {{ include "leancd.namespace" . }}
+{{- else }}
+# cluster posture: a ClusterRole bound cluster-wide (the former deploy/leancd.yaml
+# mode). leancd can apply arbitrary kinds (including CRDs and cluster-scoped
+# resources) wherever they land.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.rbac.clusterRoleName }}
+  labels:
+    {{- include "leancd.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - nonResourceURLs: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.rbac.clusterRoleName }}
+  labels:
+    {{- include "leancd.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.rbac.clusterRoleName }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "leancd.serviceAccountName" . }}
+    namespace: {{ include "leancd.namespace" . }}
+{{- end }}

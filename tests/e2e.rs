@@ -1989,3 +1989,96 @@ async fn reconcile_lock_serializes_concurrent_passes() {
     let lease = format!("{}-reconcile-lock", env.state_cm);
     common::kubectl::delete(&env.namespace, "lease", &lease);
 }
+
+/// Scenario: `helm install charts/leancd` brings up the controller, the first
+/// reconcile succeeds, and the `leancd health` probe goes fresh — the
+/// `deploy/*.yaml` → chart migration path. Uses a dedicated release/namespace
+/// so it does not disturb the `tests/leancd.yaml` controller the other
+/// scenarios rely on.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind + helm; run with: make e2e"]
+async fn helm_install_deploys_controller() {
+    common::Fixture::get();
+    let ns = "leancd-helm-e2e";
+    let release = "leancd-helm";
+    // Forgejo repos are private — create the namespace + credentials Secret
+    // first (mirrors tests/leancd.yaml), then install the chart.
+    common::run(&["kubectl", "create", "namespace", ns]);
+    common::run(&[
+        "kubectl",
+        "-n",
+        ns,
+        "create",
+        "secret",
+        "generic",
+        "leancd-git-credentials",
+        "--from-literal=GIT_USERNAME=leancd",
+        "--from-literal=GIT_PASSWORD=leancd-e2e-pass",
+    ]);
+    common::helm::install(release, ns, &[
+        "namespace.create=false",
+        "image.repository=leancd",
+        "image.tag=latest",
+        "image.pullPolicy=IfNotPresent",
+        "config.repoUrl=http://forgejo.forgejo.svc.cluster.local:3000/leancd/controller-idle.git",
+        "config.pollInterval=1h",
+        "metrics.otlpEndpoint=http://otel-collector.leancd.svc.cluster.local:4318",
+        "config.namespace=leancd-helm-e2e",
+        "namespace.name=leancd-helm-e2e",
+    ]);
+
+    // The chart renders fixed resource names; Deployment/leancd must go Available.
+    let ok = common::wait::wait_for(
+        || {
+            let out = std::process::Command::new("kubectl")
+                .args([
+                    "get",
+                    "deploy",
+                    "-n",
+                    ns,
+                    "leancd",
+                    "-o",
+                    "jsonpath={.status.availableReplicas}",
+                ])
+                .output()
+                .ok();
+            out.and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim() == "1")
+                .unwrap_or(false)
+        },
+        Duration::from_secs(180),
+        Duration::from_millis(500),
+    );
+    assert!(ok, "helm-installed Deployment did not become Available");
+
+    // Pod is Running and honours PSS restricted (same posture as tests/leancd.yaml).
+    let pod = common::kubectl::pod_name_by_selector(ns, "app.kubernetes.io/name=leancd")
+        .expect("helm-installed pod not found");
+    let p = common::kubectl::get_json(ns, "pod", &pod);
+    assert_eq!(
+        p["status"]["phase"].as_str(),
+        Some("Running"),
+        "helm-installed pod should be Running"
+    );
+    assert_eq!(
+        p["spec"]["containers"][0]["securityContext"]["runAsUser"].as_i64(),
+        Some(65532),
+        "helm-installed pod must be non-root (runAsUser 65532)"
+    );
+
+    // The first reconcile of the (empty) repo succeeds, so `leancd health` is fresh.
+    let healthy = common::wait::wait_for(
+        || {
+            std::process::Command::new("kubectl")
+                .args(["exec", "-n", ns, "deploy/leancd", "--", "leancd", "health"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        },
+        Duration::from_secs(90),
+        Duration::from_millis(1000),
+    );
+    assert!(healthy, "helm-installed controller health never went fresh");
+
+    common::helm::uninstall(release, ns);
+}
