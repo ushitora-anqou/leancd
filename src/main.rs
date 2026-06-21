@@ -8,6 +8,7 @@ mod git_sync;
 mod health;
 mod hooks;
 mod kube_util;
+mod lock;
 mod manifest;
 mod metrics;
 mod prune;
@@ -131,6 +132,9 @@ async fn run_controller(cfg: config::Config) -> Result<()> {
 
 /// Perform a single reconciliation pass.
 async fn run_sync(cfg: config::Config) -> Result<()> {
+    // Compute the PID-scoped work dir now; `cfg` is moved into the Reconciler
+    // below, and we need the path to clean it up after the pass.
+    let work_dir = cfg.effective_work_dir();
     let client = Client::try_default().await?;
     let provider = metrics::init_meter_provider()?;
     let meter = provider.meter("leancd");
@@ -144,6 +148,11 @@ async fn run_sync(cfg: config::Config) -> Result<()> {
     let res = recon.run_once().await;
     if let Err(e) = provider.shutdown() {
         tracing::warn!(error = %e, "failed to flush metrics on shutdown");
+    }
+    // Remove the PID-scoped shallow checkout so repeated `kubectl exec` syncs
+    // in the same Pod do not accumulate clones on the emptyDir. Best-effort.
+    if let Err(e) = tokio::fs::remove_dir_all(&work_dir).await {
+        tracing::warn!(error = %e, dir = %work_dir, "failed to clean up PID-scoped work dir");
     }
     res
 }

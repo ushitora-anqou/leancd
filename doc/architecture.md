@@ -1,9 +1,22 @@
 # leancd Architecture
 
 This document describes **how the current implementation works** and, where it
-matters, *why* it works that way. The overriding goal is keeping process RSS at
-or below 100MiB; every mechanism below exists to preserve that budget, and the
-trade-offs it forces — no cluster-wide cache and no background state — are noted inline where relevant.
+matters, *why* it works that way.
+
+**Correctness first.** The single non-negotiable invariant is that `sync` never
+leaves the cluster in an incorrect state — in particular, concurrent
+`controller` and `sync` passes (in the same Pod via `kubectl exec`, or in a
+separate Pod) must not race on the git checkout or clobber sync state. This
+takes absolute priority over the memory budget: a mechanism required for
+correctness is adopted even at an RSS cost. In practice each reconcile pass is
+serialized by a Kubernetes Lease (`lock.rs`) so only one pass runs at a time;
+the cost is constant-order and adds no crate dependencies, so the budget is
+not actually breached — but if the two ever conflict, correctness wins.
+
+The overriding goal — *subject to the correctness invariant above* — is keeping
+process RSS at or below 100MiB; every mechanism below exists to preserve that
+budget, and the trade-offs it forces — no cluster-wide cache and no background
+state — are noted inline where relevant.
 
 For a quick overview see [`../README.md`](../README.md); for the complete
 feature reference (every flag, env var, metric) see
@@ -57,6 +70,7 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | `kube_util.rs` | API discovery (`pinned_kind`), dynamic `Api` construction (cluster vs namespaced), SSA `apply`, `list`, `get`, `delete` |
 | `hooks.rs` | Helm-hook classification + execution (Argo CD-equivalent phases, weights, delete-policy, Job/Pod completion wait) |
 | `reconcile.rs` | The `Reconciler` engine shared by `controller` and `sync` |
+| `lock.rs` | Reconcile-pass mutual exclusion via a `coordination.k8s.io/v1` Lease (one pass at a time, cluster-wide); stale-lease reclaim |
 | `drift.rs` | Per-GVK `List` + subset comparison for drift detection |
 | `prune.rs` | Two-signal deletion of resources removed from Git; honours `resource-policy: keep` and Helm hooks |
 | `state.rs` | Single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
@@ -360,9 +374,23 @@ footprint at collection time.
 
 - **Single-threaded async runtime** (`current_thread`); `git` is a separate
   process; the OTel `PeriodicReader` runs metric export on its own thread.
-- **Idempotent applies.** `controller` and a concurrent `sync` (e.g. via
-  `kubectl exec`) both use SSA under one `field_manager`, so concurrent
-  reconciles are safe; the worst case is redundant work.
+- **Serialized reconciliation via a Lease.** `controller` and a concurrent
+  `sync` (e.g. via `kubectl exec`, or in a separate Pod) both call the same
+  `Reconciler::reconcile`, but only one pass at a time is allowed cluster-wide:
+  `reconcile` first acquires a `coordination.k8s.io/v1` Lease
+  (`{state-configmap}-reconcile-lock`, see `lock.rs`) and holds it for the whole
+  pass (git fetch → apply → prune → state write). A pass that finds the lease
+  held by another process skips with an INFO log (busy skip) rather than
+  erroring, so `sync_errors` is not incremented and the controller does not
+  back off. A crashed holder's lease is reclaimed after `lock_lease_duration`
+  (default 60s) by the next passer. Passes also refresh the lease (`renewTime`)
+  at the major await points and inside the hook-completion poll loop, so a long
+  pass is never reclaimed as stale. This serialization is what makes the state
+  ConfigMap safe without CAS: with passes serialized, the SSA `state::write`
+  (under one `field_manager`) cannot lose updates. The PID-scoped `work_dir`
+  (`Config::effective_work_dir`) is a second layer of defence: even if the lease
+  were briefly lost, two processes in the same Pod never touch the same git
+  checkout.
 - **Error handling.** `reconcile` returns `Err` only for git/state/discovery-
   stopping errors; `run_once` records `last_error` and increments
   `sync_errors` on failure. Per-resource apply/prune/drift failures are `warn!`-
@@ -410,7 +438,9 @@ Mirroring the project non-goals ([`../README.md`](../README.md)):
 - No notifications, no web UI, no webhook receiver.
 - One process = one repository + one path.
 
-Implementation caveats (the memory strategy that keeps RSS ≤ 100MiB):
+Implementation caveats (the memory strategy that keeps RSS ≤ 100MiB — all
+subject to the correctness-first invariant above; the reconcile Lease in
+`lock.rs` is the one deliberate structural cost accepted in its name):
 
 - No `kube-rs` informer/cache; no `Watch`; no DB or global index — each
   interaction is a direct `List`/`Get`/`Patch`/`Delete`.

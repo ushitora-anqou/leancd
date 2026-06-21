@@ -1913,3 +1913,79 @@ fn pod_for_job(job: &str) -> String {
     common::kubectl::pod_name_by_selector("leancd", &format!("job-name={job}"))
         .unwrap_or_else(|| panic!("no pod found for job {job}"))
 }
+
+/// Scenario: a short-poll controller and a concurrent `leancd sync` (kubectl
+/// exec) both reconcile the same repo. Overlapping passes are serialized by the
+/// reconcile Lease (`lock.rs`), so the cluster converges to Git HEAD with no
+/// error recorded in state. Verifies final consistency only — a timing-dependent
+/// "busy skip" is not asserted, to avoid flakiness.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn reconcile_lock_serializes_concurrent_passes() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("conc-lock");
+    fj.create_repo(&env.repo, false);
+    let clone = common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "cm.yaml".into(),
+            manifests::configmap("conc-cm", "default", &[("k", "1")]),
+        )],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+
+    // Seed state so the controller takes the drift-check path.
+    assert!(common::leancd::sync(&args).success);
+
+    // Start a short-poll controller (separate Job, 2s poll).
+    let _ctrl = common::leancd::controller("leancd-conc-lock", args.clone());
+
+    // Push two new resources, then run a manual sync concurrently with the
+    // controller's poll cycle. The Lease serializes their passes; both must
+    // succeed and never corrupt the checkout or state.
+    common::git::push_more(
+        &clone,
+        fj,
+        &env.repo,
+        &[
+            (
+                "cm2.yaml".into(),
+                manifests::configmap("conc-cm2", "default", &[("k", "2")]),
+            ),
+            (
+                "cm3.yaml".into(),
+                manifests::configmap("conc-cm3", "default", &[("k", "3")]),
+            ),
+        ],
+    );
+    let res = common::leancd::sync(&args);
+    assert!(res.success, "concurrent sync failed: {}", res.stderr);
+
+    // Final consistency: the controller's subsequent polls bring the cluster
+    // fully to Git HEAD.
+    assert!(
+        common::wait::wait_for(
+            || {
+                common::kubectl::exists("default", "configmap", "conc-cm2")
+                    && common::kubectl::exists("default", "configmap", "conc-cm3")
+            },
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        ),
+        "concurrent passes did not converge all resources to Git HEAD"
+    );
+
+    // No error recorded in state despite the overlap.
+    let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
+    let s = state_json(&st);
+    assert!(
+        s.get("last_error").map(|v| v.is_null()).unwrap_or(true),
+        "state should have no last_error after concurrent sync, got: {s}"
+    );
+
+    // Best-effort: drop the reconcile lease so it cannot outlive the scenario.
+    let lease = format!("{}-reconcile-lock", env.state_cm);
+    common::kubectl::delete(&env.namespace, "lease", &lease);
+}

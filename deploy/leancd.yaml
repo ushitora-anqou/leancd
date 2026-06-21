@@ -101,6 +101,12 @@ spec:
               value: "60s"
             - name: LEANCD_WORK_DIR
               value: "/tmp/leancd-work"
+            # Reconcile-pass mutual exclusion: one pass at a time (cluster-wide)
+            # via a coordination.k8s.io/lease. See lock.rs.
+            - name: LEANCD_LOCK_LEASE_DURATION_SECS
+              value: "60"
+            - name: LEANCD_LOCK_WAIT_TIMEOUT_SECS
+              value: "30"
             # --- metrics: OTLP/HTTP push to an OpenTelemetry Collector ---
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: "http://otel-collector:4318"

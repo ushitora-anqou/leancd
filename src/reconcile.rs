@@ -16,6 +16,7 @@ use crate::error::{Error, Result};
 use crate::git_sync;
 use crate::hooks;
 use crate::kube_util;
+use crate::lock;
 use crate::manifest::{self, RawManifest};
 use crate::metrics::Metrics;
 use crate::{drift, prune, state};
@@ -58,7 +59,32 @@ impl Reconciler {
         state::write(&self.client, &self.cfg, &s).await
     }
 
+    /// Acquire the reconcile Lease, run one pass, then release the lease — even
+    /// on error. A busy lease (another pass in flight) skips with an INFO log
+    /// rather than erroring, so `sync_errors` is not incremented and the
+    /// controller does not back off. Serializing passes this way is what makes
+    /// the state ConfigMap safe without CAS (see `lock.rs`).
     async fn reconcile(&self) -> Result<()> {
+        let holder = lock::holder_identity(&lock::holder_base(), std::process::id());
+        let guard = match lock::acquire(&self.client, &self.cfg, &holder, &self.stop).await {
+            Ok(g) => g,
+            Err(lock::AcquireError::Busy) => {
+                tracing::info!("reconcile lock busy; skipping this pass");
+                return Ok(());
+            }
+            Err(lock::AcquireError::Kube(e)) => return Err(Error::Kube(e)),
+        };
+        let result = self.reconcile_inner(&guard).await;
+        // Release on both success and failure so the next pass need not wait
+        // for the stale-reclaim timeout. Best-effort: a failed release just
+        // means the lease lingers until lock_lease_duration reclaims it.
+        if let Err(e) = guard.release().await {
+            tracing::warn!(error = %e, "failed to release reconcile lease");
+        }
+        result
+    }
+
+    async fn reconcile_inner(&self, guard: &lock::LeaseGuard) -> Result<()> {
         let prev = state::read(&self.client, &self.cfg).await?;
         let prev_sha = prev
             .as_ref()
@@ -67,7 +93,11 @@ impl Reconciler {
         let prev_applied = prev.as_ref().map(|s| s.applied.clone()).unwrap_or_default();
 
         let sync = git_sync::sync(&self.cfg, prev_sha.as_deref()).await?;
-        let work = Path::new(&self.cfg.work_dir);
+        // The git fetch may have taken a while; refresh the lease so a long
+        // pass is not reclaimed as stale mid-flight.
+        self.touch_lease(guard).await;
+        let work_dir = self.cfg.effective_work_dir();
+        let work = Path::new(&work_dir);
         let roots = match manifest::expand_roots(work, &self.cfg.path) {
             Ok(r) => r,
             Err(Error::Config(_)) if !prev_applied.is_empty() => {
@@ -112,6 +142,7 @@ impl Reconciler {
             // pre-delete hooks; abort (skip the prune) on failure.
             let pre = self
                 .hook_phase(
+                    guard,
                     &classified.pre_delete,
                     hooks::HookPhase::PreDelete,
                     "predelete",
@@ -125,6 +156,7 @@ impl Reconciler {
                 .len();
             let post = self
                 .hook_phase(
+                    guard,
                     &classified.post_delete,
                     hooks::HookPhase::PostDelete,
                     "postdelete",
@@ -136,14 +168,19 @@ impl Reconciler {
         } else if do_full {
             // PreSync -> apply main -> PostSync.
             let pre = self
-                .hook_phase(&classified.pre, hooks::HookPhase::PreSync, "presync")
+                .hook_phase(guard, &classified.pre, hooks::HookPhase::PreSync, "presync")
                 .await;
             if let Some((_, reason)) = pre.failures.first() {
                 return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
             }
             self.apply_all(&classified.main).await?;
             let post = self
-                .hook_phase(&classified.post, hooks::HookPhase::PostSync, "postsync")
+                .hook_phase(
+                    guard,
+                    &classified.post,
+                    hooks::HookPhase::PostSync,
+                    "postsync",
+                )
                 .await;
             if let Some((_, reason)) = post.failures.first() {
                 post_error = Some(format!("post-sync hook failed: {reason}"));
@@ -161,14 +198,19 @@ impl Reconciler {
                 // Re-apply on drift so a field claimed by another SSA field
                 // manager is reclaimed back to Git (all applies force-conflict SSA).
                 let pre = self
-                    .hook_phase(&classified.pre, hooks::HookPhase::PreSync, "presync")
+                    .hook_phase(guard, &classified.pre, hooks::HookPhase::PreSync, "presync")
                     .await;
                 if let Some((_, reason)) = pre.failures.first() {
                     return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
                 }
                 self.apply_all(&classified.main).await?;
                 let post = self
-                    .hook_phase(&classified.post, hooks::HookPhase::PostSync, "postsync")
+                    .hook_phase(
+                        guard,
+                        &classified.post,
+                        hooks::HookPhase::PostSync,
+                        "postsync",
+                    )
                     .await;
                 if let Some((_, reason)) = post.failures.first() {
                     post_error = Some(format!("post-sync hook failed: {reason}"));
@@ -182,6 +224,7 @@ impl Reconciler {
                 .await?
                 .len();
         }
+        self.touch_lease(guard).await;
 
         let mut new_state = prev.clone().unwrap_or_default();
         new_state.last_sha = Some(sync.sha.clone());
@@ -191,6 +234,7 @@ impl Reconciler {
         new_state.drift_count = drift_count;
         new_state.managed_count = current_keys.len();
         new_state.applied = current_keys.clone();
+        self.touch_lease(guard).await;
         state::write(&self.client, &self.cfg, &new_state).await?;
 
         self.metrics
@@ -217,6 +261,18 @@ impl Reconciler {
             "reconciliation complete"
         );
         Ok(())
+    }
+
+    /// Best-effort lease renew: refresh `renewTime` so a long pass is not
+    /// reclaimed as stale. Never aborts the pass on failure or lease loss — the
+    /// PID-scoped `work_dir` still prevents git corruption, and the next pass
+    /// re-converges to Git HEAD.
+    async fn touch_lease(&self, guard: &lock::LeaseGuard) {
+        match lock::renew(&self.client, &self.cfg, guard).await {
+            Ok(true) => {}
+            Ok(false) => tracing::warn!("reconcile lease lost mid-pass; continuing best-effort"),
+            Err(e) => tracing::warn!(error = %e, "lease renew failed; continuing best-effort"),
+        }
     }
 
     /// Apply every manifest, sharing one API-discovery lookup per resource kind.
@@ -266,11 +322,13 @@ impl Reconciler {
     /// Run one hook phase and record its outcome metrics, returning the outcome.
     async fn hook_phase(
         &self,
+        guard: &lock::LeaseGuard,
         hooks_list: &[hooks::HookInfo],
         phase: hooks::HookPhase,
         label: &'static str,
     ) -> hooks::PhaseOutcome {
-        let outcome = hooks::run_phase(&self.client, &self.cfg, hooks_list, phase).await;
+        let outcome =
+            hooks::run_phase(&self.client, &self.cfg, hooks_list, phase, Some(guard)).await;
         let failed = outcome.failures.len() as u64;
         let succeeded = outcome.attempted.saturating_sub(outcome.failures.len()) as u64;
         self.metrics.record_hooks(label, succeeded, failed);

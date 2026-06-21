@@ -247,6 +247,8 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 | `--backoff-max` | `LEANCD_BACKOFF_MAX` | `10m` | controller | maximum backoff delay (cap); resets to `--poll-interval` on success |
 | `--shutdown-timeout-secs` | `LEANCD_SHUTDOWN_TIMEOUT_SECS` | `28` | controller | grace period for the in-flight pass to finish before force-abort on shutdown (keep ≤ Pod `terminationGracePeriodSeconds`) |
 | `--health-stale-factor` | `LEANCD_HEALTH_STALE_FACTOR` | `10` | all | `leancd health` reports stale when the last sync is older than `poll_interval × this` |
+| `--lock-lease-duration-secs` | `LEANCD_LOCK_LEASE_DURATION_SECS` | `60` | all | reconcile-exclusion Lease lifetime (s); a crashed holder's lease is reclaimed after this. Concurrent `controller`/`sync` passes are serialized via a Lease so only one runs at a time. |
+| `--lock-wait-timeout-secs` | `LEANCD_LOCK_WAIT_TIMEOUT_SECS` | `30` | all | seconds to wait for the reconcile Lease when another pass holds it before skipping with a "busy" INFO log (not an error) |
 
 `--poll-interval` and `--git-*-env` are accepted by all subcommands (they are
 part of `CommonArgs`) but only `controller` uses `--poll-interval` in a

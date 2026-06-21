@@ -67,6 +67,20 @@ pub struct Config {
     /// A sync is considered stale for health checks when the last successful
     /// sync is older than `poll_interval * health_stale_factor`.
     pub health_stale_factor: u32,
+
+    /// Lifetime of the reconcile-exclusion Lease (see `lock.rs`). A holder that
+    /// stops renewing for this long is treated as stale, and another process may
+    /// forcibly acquire the lease. Must exceed the longest normal reconcile pass
+    /// (including hook waits); a crashed holder's lease is reclaimed after this
+    /// duration. Correctness (no concurrent passes) takes priority over the
+    /// memory budget — this mechanism exists precisely to guarantee it.
+    pub lock_lease_duration: std::time::Duration,
+
+    /// How long to wait for the reconcile Lease when another pass already holds
+    /// it, before giving up with a "busy" skip (an INFO log, not an error). Long
+    /// enough to ride out a peer's quick pass, short enough that a manual `sync`
+    /// does not block excessively.
+    pub lock_wait_timeout: std::time::Duration,
 }
 
 impl Config {
@@ -120,6 +134,22 @@ impl Config {
             }
         }
         Ok(self.repo_url.clone())
+    }
+
+    /// PID-scoped path of the actual working directory (`{work_dir}-{pid}`).
+    ///
+    /// The controller process and a concurrent `leancd sync` (e.g. via
+    /// `kubectl exec` in the same Pod) each get their own shallow checkout, so
+    /// `git fetch`/`reset`/`clone` never touch the same directory at once. A
+    /// separate Pod already has its own emptyDir, so the PID suffix is harmless
+    /// there. The whole reconcile pass is additionally serialized by the
+    /// `lock.rs` Lease — PID-scoping is the second layer of defence.
+    pub fn effective_work_dir(&self) -> String {
+        format!(
+            "{}-{}",
+            self.work_dir.trim_end_matches('/'),
+            std::process::id()
+        )
     }
 }
 
@@ -260,6 +290,8 @@ mod tests {
             backoff_max: std::time::Duration::from_secs(600),
             shutdown_timeout: std::time::Duration::from_secs(28),
             health_stale_factor: 10,
+            lock_lease_duration: std::time::Duration::from_secs(60),
+            lock_wait_timeout: std::time::Duration::from_secs(30),
         }
     }
 
@@ -333,5 +365,29 @@ mod tests {
         std::env::remove_var("LEANCD_TEST_AUTH_USER");
         std::env::remove_var("LEANCD_TEST_AUTH_PASS");
         assert_eq!(url, "https://alice:s3cr3t@github.com/o/r");
+    }
+
+    #[test]
+    fn effective_work_dir_appends_pid() {
+        let cfg = test_config("https://github.com/o/r");
+        let eff = cfg.effective_work_dir();
+        assert!(
+            eff.starts_with("/tmp/leancd-work-"),
+            "effective_work_dir should keep the base work dir: {eff}"
+        );
+        assert!(
+            eff.ends_with(&std::process::id().to_string()),
+            "effective_work_dir should end with the pid: {eff}"
+        );
+    }
+
+    #[test]
+    fn effective_work_dir_strips_trailing_slash() {
+        let mut cfg = test_config("https://github.com/o/r");
+        cfg.work_dir = "/tmp/x/".into();
+        let eff = cfg.effective_work_dir();
+        assert!(!eff.contains("//"), "no double slash: {eff}");
+        assert!(eff.starts_with("/tmp/x-"), "base kept without slash: {eff}");
+        assert!(eff.ends_with(&std::process::id().to_string()));
     }
 }

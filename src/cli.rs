@@ -111,6 +111,18 @@ pub struct CommonArgs {
     /// sync is older than `poll_interval` times this factor.
     #[arg(long, env = "LEANCD_HEALTH_STALE_FACTOR", default_value = "10")]
     pub health_stale_factor: u32,
+
+    /// Lifetime (seconds) of the reconcile-exclusion Lease (`lock.rs`). A
+    /// crashed holder's lease is forcibly acquired by another process after
+    /// this duration. Must exceed the longest normal reconcile pass (including
+    /// hook waits) and `--shutdown-timeout-secs`.
+    #[arg(long, env = "LEANCD_LOCK_LEASE_DURATION_SECS", default_value = "60")]
+    pub lock_lease_duration_secs: u64,
+
+    /// Seconds to wait for the reconcile Lease when another pass already holds
+    /// it before skipping this pass with a "busy" INFO log (not an error).
+    #[arg(long, env = "LEANCD_LOCK_WAIT_TIMEOUT_SECS", default_value = "30")]
+    pub lock_wait_timeout_secs: u64,
 }
 
 impl CommonArgs {
@@ -140,6 +152,8 @@ impl CommonArgs {
             backoff_max: parse_duration(&self.backoff_max)?,
             shutdown_timeout: Duration::from_secs(self.shutdown_timeout_secs),
             health_stale_factor: self.health_stale_factor,
+            lock_lease_duration: Duration::from_secs(self.lock_lease_duration_secs),
+            lock_wait_timeout: Duration::from_secs(self.lock_wait_timeout_secs),
         })
     }
 }
@@ -168,6 +182,8 @@ mod tests {
             backoff_max: "10m".into(),
             shutdown_timeout_secs: 28,
             health_stale_factor: 10,
+            lock_lease_duration_secs: 60,
+            lock_wait_timeout_secs: 30,
         }
     }
 

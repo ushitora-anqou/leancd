@@ -9,9 +9,11 @@
 
 ## What this is
 
-**leancd** is a minimal, low-memory Kubernetes continuous-delivery controller written in Rust. It syncs plain YAML manifests from a Git repository into the cluster it runs in, detects drift, and self-heals — like Argo CD / Flux CD, but with one overriding constraint: the process RSS must stay **≤ 100MiB** at all times (idle and sync peak).
+**leancd** is a minimal, low-memory Kubernetes continuous-delivery controller written in Rust. It syncs plain YAML manifests from a Git repository into the cluster it runs in, detects drift, and self-heals — like Argo CD / Flux CD.
 
-This memory budget is **the headline goal** and is verified by an automated benchmark. Every design and implementation decision is justified against "does this increase RSS?". When in doubt, prefer fewer allocations, no caching, and no background stores.
+**Correctness is the higher-order invariant; the memory budget is subordinate to it.** `sync` must never leave the cluster in an incorrect state — in particular, concurrent `controller` and `sync` passes (same Pod via `kubectl exec`, or a separate Pod) must not race on the git checkout or clobber sync state. This is enforced by serializing each reconcile pass through a Kubernetes Lease (`lock.rs`, one pass at a time cluster-wide, with stale-lease reclaim). The cost is constant-order and adds no crate dependencies. If correctness and the RSS budget ever conflict, **correctness wins**.
+
+Subject to that invariant, the overriding constraint is that process RSS stays **≤ 100MiB** at all times (idle and sync peak). This memory budget is **the headline goal** and is verified by an automated benchmark. Every design and implementation decision is justified against "does this increase RSS? (without breaking correctness)". When in doubt, prefer fewer allocations, no caching, and no background stores.
 
 Rationale summary: RSS ≤ 100MiB is the headline goal, favoured over feature breadth, real-time responsiveness, and implementation convenience (Argo CD runs at hundreds of MiB–GiB, Flux at tens–100+MiB; leancd targets ≤100MiB). The trade-offs that enforce it — no cluster-wide cache, no background state, shallow clones, streaming YAML parses, a single-threaded runtime — are detailed in `doc/architecture.md` §14.
 
@@ -28,9 +30,11 @@ make bench                     # RSS benchmark against a kind cluster (see below
 make e2e                       # end-to-end tests: kind cluster with in-cluster
                                #   Forgejo + leancd Pods (leancd's intended
                                #   behaviour). #[ignore]d, so not in nix flake check.
-                               #   Concurrency (controller vs sync running at once,
-                               #   safe via one SSA fieldManager) is unit-test
-                               #   territory, out of e2e scope.
+                               #   Concurrency (controller vs sync running at once)
+                               #   is serialized by a reconcile Lease (lock.rs);
+                               #   the lease/stale logic is unit-tested and an e2e
+                               #   scenario asserts final consistency under a
+                               #   concurrent controller + sync.
 make test                      # == nix flake check : full CI (fmt, clippy -D warnings,
                                #   nextest, cargo-deny, cargo-audit)
 ```
@@ -74,6 +78,7 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 | `kube_util.rs` | API discovery (`pinned_kind`), dynamic `Api` construction (cluster vs namespaced), SSA `apply`, `list`, `get`, `delete` |
 | `hooks.rs` | Helm-hook classification + execution: Argo CD-equivalent phase mapping (pre/post-install-upgrade, pre/post-delete), `hook-weight` ordering, `hook-delete-policy`, Job/Pod completion wait |
 | `reconcile.rs` | the `Reconciler` engine shared by `controller`/`sync` |
+| `lock.rs` | reconcile-pass mutual exclusion via a `coordination.k8s.io/v1` Lease (one pass at a time, cluster-wide); stale-lease reclaim |
 | `prune.rs` | set-diff deletion of resources removed from Git (`ResourceKey` identity); keeps `resource-policy: keep` and Helm-hook resources |
 | `drift.rs` | per-GVK `List` + subset comparison |
 | `state.rs` | single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |

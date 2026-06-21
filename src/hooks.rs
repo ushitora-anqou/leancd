@@ -27,6 +27,7 @@ use serde_json::Value;
 
 use crate::config::Config;
 use crate::kube_util;
+use crate::lock;
 use crate::manifest::{self, RawManifest};
 use crate::prune::ResourceKey;
 
@@ -266,6 +267,7 @@ pub async fn run_phase(
     cfg: &Config,
     hooks: &[HookInfo],
     phase: HookPhase,
+    lease: Option<&lock::LeaseGuard>,
 ) -> PhaseOutcome {
     let mut ordered: Vec<HookInfo> = hooks.to_vec();
     sort_by_weight(&mut ordered);
@@ -280,7 +282,7 @@ pub async fn run_phase(
             weight = info.weight,
             "running helm hook"
         );
-        if let Err((key, reason)) = run_one(client, cfg, &info).await {
+        if let Err((key, reason)) = run_one(client, cfg, &info, lease).await {
             tracing::warn!(phase = ?phase, key = ?key, reason = %reason, "helm hook failed");
             failures.push((key, reason));
             break;
@@ -297,6 +299,7 @@ async fn run_one(
     client: &Client,
     cfg: &Config,
     info: &HookInfo,
+    lease: Option<&lock::LeaseGuard>,
 ) -> std::result::Result<(), (ResourceKey, String)> {
     let key = info.key();
     let m = &info.manifest;
@@ -332,7 +335,7 @@ async fn run_one(
 
     // Await completion only for kinds with a defined terminal state.
     let completion = if is_waitable(&m.group, &m.kind) {
-        wait_for_completion(client, &ar, &caps.scope, cfg, m).await
+        wait_for_completion(client, &ar, &caps.scope, cfg, m, lease).await
     } else {
         Completion::Succeeded
     };
@@ -370,9 +373,23 @@ async fn wait_for_completion(
     scope: &Scope,
     cfg: &Config,
     m: &RawManifest,
+    lease: Option<&lock::LeaseGuard>,
 ) -> Completion {
     let deadline = tokio::time::Instant::now() + cfg.hook_timeout;
     loop {
+        // Refresh the reconcile lease each poll so a long hook wait does not
+        // let the lease go stale and get reclaimed mid-pass. Best-effort: a
+        // lost/failed renew never fails the hook (the PID-scoped work_dir and
+        // next-pass convergence still hold).
+        if let Some(g) = lease {
+            match lock::renew(client, cfg, g).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!("reconcile lease lost while awaiting hook; continuing")
+                }
+                Err(e) => tracing::warn!(error = %e, "lease renew failed while awaiting hook"),
+            }
+        }
         match kube_util::get(
             client,
             ar,

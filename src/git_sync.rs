@@ -33,7 +33,11 @@ pub struct SyncOutcome {
 /// SHA, `changed` is `true` and the caller can skip work when nothing moved.
 pub async fn sync(cfg: &Config, prev_sha: Option<&str>) -> Result<SyncOutcome> {
     let url = cfg.authed_url()?;
-    let work = Path::new(&cfg.work_dir);
+    // PID-scoped so the controller process and a concurrent `leancd sync` (e.g.
+    // via `kubectl exec` in the same Pod) never operate on the same shallow
+    // checkout at once. See `Config::effective_work_dir` and `lock.rs`.
+    let work_dir = cfg.effective_work_dir();
+    let work = Path::new(&work_dir);
     let git_dir = work.join(".git");
 
     // If an SSH key is configured, materialize it to a temp file so the git
@@ -43,21 +47,13 @@ pub async fn sync(cfg: &Config, prev_sha: Option<&str>) -> Result<SyncOutcome> {
     if git_dir.exists() {
         // Existing checkout: update in place.
         run_git(
-            &[
-                "-C",
-                &cfg.work_dir,
-                "fetch",
-                "--depth",
-                "1",
-                &url,
-                &cfg.branch,
-            ],
+            &["-C", &work_dir, "fetch", "--depth", "1", &url, &cfg.branch],
             false,
             ssh.as_ref(),
         )
         .await?;
         run_git(
-            &["-C", &cfg.work_dir, "reset", "--hard", "FETCH_HEAD"],
+            &["-C", &work_dir, "reset", "--hard", "FETCH_HEAD"],
             false,
             ssh.as_ref(),
         )
@@ -65,7 +61,7 @@ pub async fn sync(cfg: &Config, prev_sha: Option<&str>) -> Result<SyncOutcome> {
     } else {
         // Fresh shallow clone.
         if work.exists() {
-            tokio::fs::remove_dir_all(&cfg.work_dir)
+            tokio::fs::remove_dir_all(&work_dir)
                 .await
                 .map_err(|e| Error::Git(format!("could not clear stale work dir: {e}")))?;
         }
@@ -77,7 +73,7 @@ pub async fn sync(cfg: &Config, prev_sha: Option<&str>) -> Result<SyncOutcome> {
                 "--branch",
                 &cfg.branch,
                 &url,
-                &cfg.work_dir,
+                &work_dir,
             ],
             false,
             ssh.as_ref(),
@@ -85,7 +81,7 @@ pub async fn sync(cfg: &Config, prev_sha: Option<&str>) -> Result<SyncOutcome> {
         .await?;
     }
 
-    let sha = run_git_capture(&["-C", &cfg.work_dir, "rev-parse", "HEAD"], ssh.as_ref()).await?;
+    let sha = run_git_capture(&["-C", &work_dir, "rev-parse", "HEAD"], ssh.as_ref()).await?;
     let sha = sha.trim().to_string();
     let changed = match prev_sha {
         Some(prev) => prev != sha,

@@ -12,6 +12,10 @@ anyhow = "1.0.102"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 glob = "0.3"
 humantime = "2.3"
+# jiff is a transitive dependency of k8s-openapi 0.27 (MicroTime is jiff-based);
+# we use it directly to construct Lease renew/acquire times. Promoting it to a
+# direct dep adds no new code to the binary (already linked). MIT-licensed.
+jiff = "0.2"
 k8s-openapi = { version = "0.27.1", features = ["latest"] }
 kube = { version = "3.1.0", features = ["client", "config", "rustls-tls"] }
 opentelemetry = "0.28"

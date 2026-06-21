@@ -44,7 +44,9 @@ rules:
   - nonResourceURLs: ["*"]
     verbs: ["*"]
 ---
-# Grant leancd its permissions in its own namespace (for the state ConfigMap).
+# Grant leancd its permissions in its own namespace (for the state ConfigMap
+# and the reconcile-exclusion Lease — coordination.k8s.io/leases, which lock.rs
+# creates/updates/deletes in this namespace).
 # Copy this block for each additional target namespace, changing
 # `metadata.namespace`.
 apiVersion: rbac.authorization.k8s.io/v1
