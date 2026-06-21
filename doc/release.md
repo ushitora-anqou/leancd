@@ -15,7 +15,7 @@ parts around it.
   ```sh
   make fmt
   make test        # nix flake check: fmt + clippy -D + nextest + deny + audit
-  make bench       # optional: confirm RSS stays ≤ 100MiB
+  make bench       # optional: confirm RSS stays within budget
   ```
 
 ## 2. Tag and push

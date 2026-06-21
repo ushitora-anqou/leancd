@@ -202,7 +202,7 @@ mod tests {
     };
 
     /// The headline guarantee: even the test process itself must sit well under
-    /// the 100MiB RSS budget. This is a sanity check for the measurement code;
+    /// the RSS budget. This is a sanity check for the measurement code;
     /// the authoritative benchmark runs against a simulated cluster (see
     /// `bench/`).
     #[test]
@@ -213,7 +213,7 @@ mod tests {
                 let budget = 100 * 1024 * 1024;
                 assert!(
                     rss < budget,
-                    "current RSS {rss} bytes >= 100MiB budget {budget}"
+                    "current RSS {rss} bytes >= the budget {budget}"
                 );
             }
             None => {

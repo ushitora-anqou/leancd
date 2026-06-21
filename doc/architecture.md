@@ -14,8 +14,8 @@ the cost is constant-order and adds no crate dependencies, so the budget is
 not actually breached — but if the two ever conflict, correctness wins.
 
 The overriding goal — *subject to the correctness invariant above* — is keeping
-process RSS at or below 100MiB; every mechanism below exists to preserve that
-budget, and the trade-offs it forces — no cluster-wide cache and no background
+process RSS minimal; every mechanism below exists to preserve that budget, and
+the trade-offs it forces — no cluster-wide cache and no background
 state — are noted inline where relevant.
 
 For a quick overview see [`../README.md`](../README.md); for the complete
@@ -48,7 +48,7 @@ one path) into the cluster it runs in.
                    Git repository      Kubernetes API
 ```
 
-The overriding invariant is that process RSS stays **≤ 100MiB** at all times
+The overriding invariant is that process RSS stays **strictly small** at all times
 (idle and at sync peak). That budget is the project's headline goal — favoured
 over feature breadth, real-time responsiveness, and implementation convenience
 — so every mechanism below exists to preserve it: no cluster-wide cache, no
@@ -438,7 +438,7 @@ Mirroring the project non-goals ([`../README.md`](../README.md)):
 - No notifications, no web UI, no webhook receiver.
 - One process = one repository + one path.
 
-Implementation caveats (the memory strategy that keeps RSS ≤ 100MiB — all
+Implementation caveats (the memory strategy that keeps RSS minimal — all
 subject to the correctness-first invariant above; the reconcile Lease in
 `lock.rs` is the one deliberate structural cost accepted in its name):
 
@@ -458,6 +458,10 @@ subject to the correctness-first invariant above; the reconcile Lease in
   dependency set is gated by `cargo-deny` (Apache-2.0-compatible licenses; see
   `deny.toml`). The dependency count is not minimized for its own sake — runtime
   RSS is the metric that matters.
+- Library vs hand-rolled is an empirical choice, not a doctrinal one: a new
+  dependency does not automatically raise RSS, and a hand-rolled implementation
+  is not automatically leaner. When both are viable, implement each and measure
+  actual RSS with `make bench` before choosing.
 
 ## 15. Cross-references
 

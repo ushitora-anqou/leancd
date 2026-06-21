@@ -1,7 +1,7 @@
 # leancd RSS benchmark
 
-This directory verifies the headline guarantee: leancd keeps its RSS under
-**100MiB** while reconciling a realistic cluster — both at the sync peak
+This directory verifies the headline guarantee: leancd keeps its RSS minimal
+while reconciling a realistic cluster — both at the sync peak
 (fetch/parse/apply) and at idle.
 
 ## What it does
@@ -19,7 +19,7 @@ This directory verifies the headline guarantee: leancd keeps its RSS under
      via `ps`. Shared pages are double-counted, so this deliberately
      overestimates (a conservative regression gate).
 5. Fails if any of the self/tree peak/idle values >= the budget (default
-   100MiB); every sampled point must stay under it.
+   `RSS_BUDGET_MIB`); every sampled point must stay under it.
 
 ## Prerequisites
 

@@ -144,7 +144,7 @@ spec:
             - name: tmp
               mountPath: /tmp
           resources:
-            # RSS stays under 100MiB (see bench/); the limit leaves headroom.
+            # RSS stays minimal (see bench/); the limit leaves headroom.
             limits:
               memory: 128Mi
               cpu: 200m

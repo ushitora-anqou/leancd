@@ -411,7 +411,7 @@ async fn metrics() {
     assert!(rss > 0, "rss should be positive");
     assert!(
         rss < 100 * 1024 * 1024,
-        "rss should stay under the 100MiB budget: {rss} bytes"
+        "rss should stay under the RSS budget: {rss} bytes"
     );
 }
 

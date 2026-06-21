@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Benchmark leancd's RSS against the headline budget (default 100MiB) using a
+# Benchmark leancd's RSS against the headline budget (default `RSS_BUDGET_MIB`) using a
 # simulated cluster on `kind`.
 #
 # The benchmark builds leancd in release mode and runs it as a process pointed

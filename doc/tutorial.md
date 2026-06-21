@@ -307,7 +307,7 @@ curl -s localhost:8889/metrics | grep leancd_
 
 Look for:
 
-- `leancd_rss_bytes` — the headline metric; it must stay under 100MiB.
+- `leancd_rss_bytes` — the headline metric; it must stay under the RSS budget.
 - `leancd_managed_resources` — number of Git-managed resources.
 - `leancd_sync_total` / `leancd_sync_errors_total` — pass and error counts.
 - `leancd_drift_detected{group,version,kind}` — drifts found last pass.
@@ -325,7 +325,7 @@ make bench        # single run at the default scale (200 resources)
 make scale        # RSS across 100/300/500 resources
 ```
 
-This is not required to use leancd, but it verifies the ≤ 100MiB guarantee on
+This is not required to use leancd, but it verifies the memory-budget guarantee on
 your machine. See [`../bench/README.md`](../bench/README.md).
 
 ## 13. Clean up

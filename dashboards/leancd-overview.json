@@ -12,7 +12,7 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "RSS (memory budget ≤ 100MiB)",
+      "title": "RSS (memory budget)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -79,7 +79,7 @@
     {
       "id": 2,
       "type": "timeseries",
-      "title": "RSS over time (budget line at 100MiB)",
+      "title": "RSS over time (budget line)",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"

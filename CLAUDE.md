@@ -13,9 +13,9 @@
 
 **Correctness is the higher-order invariant; the memory budget is subordinate to it.** `sync` must never leave the cluster in an incorrect state — in particular, concurrent `controller` and `sync` passes (same Pod via `kubectl exec`, or a separate Pod) must not race on the git checkout or clobber sync state. This is enforced by serializing each reconcile pass through a Kubernetes Lease (`lock.rs`, one pass at a time cluster-wide, with stale-lease reclaim). The cost is constant-order and adds no crate dependencies. If correctness and the RSS budget ever conflict, **correctness wins**.
 
-Subject to that invariant, the overriding constraint is that process RSS stays **≤ 100MiB** at all times (idle and sync peak). This memory budget is **the headline goal** and is verified by an automated benchmark. Every design and implementation decision is justified against "does this increase RSS? (without breaking correctness)". When in doubt, prefer fewer allocations, no caching, and no background stores.
+Subject to that invariant, the overriding constraint is that process RSS stays **strictly small** at all times (idle and sync peak) — minimizing memory consumption is **the headline goal**, enforced against a tunable budget by an automated benchmark (see `bench/`). Every design and implementation decision is justified against "does this increase RSS? (without breaking correctness)". When in doubt, prefer fewer allocations, no caching, and no background stores.
 
-Rationale summary: RSS ≤ 100MiB is the headline goal, favoured over feature breadth, real-time responsiveness, and implementation convenience (Argo CD runs at hundreds of MiB–GiB, Flux at tens–100+MiB; leancd targets ≤100MiB). The trade-offs that enforce it — no cluster-wide cache, no background state, shallow clones, streaming YAML parses, a single-threaded runtime — are detailed in `doc/architecture.md` §14.
+Rationale summary: a minimal process-RSS footprint is the headline goal, favoured over feature breadth, real-time responsiveness, and implementation convenience (Argo CD runs at hundreds of MiB–GiB, Flux at tens–100+MiB; leancd targets a far smaller footprint). The trade-offs that enforce it — no cluster-wide cache, no background state, shallow clones, streaming YAML parses, a single-threaded runtime — are detailed in `doc/architecture.md` §14.
 
 ## Commands
 
@@ -98,5 +98,5 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 ## Conventions when editing
 
 - Match the existing style: module-level `//!` doc comments, `tracing` structured logs (`tracing::warn!`/`info!` with `error = %e`), `crate::error::{Error, Result}` (thiserror enum) rather than `anyhow` in library code (`anyhow` is only at `main`'s top level).
-- Prefer reusing an existing library or implementation over hand-rolling your own; the dependency count is not a concern as long as runtime RSS stays within budget. Remember `cargo-deny` only allows Apache-2.0-compatible licenses (see `deny.toml`).
+- A new dependency does not automatically raise RSS, and a hand-rolled implementation is not automatically leaner — both are empirical questions. When a choice exists between reusing an existing library and hand-rolling, implement **both**, measure actual RSS (via `make bench`), and keep whichever is smaller (or simpler, when RSS is comparable). The dependency count is not a concern in itself; RSS and license compatibility are. Remember `cargo-deny` only allows Apache-2.0-compatible licenses (see `deny.toml`).
 - When changing kube interaction code, confirm it issues direct API calls and builds no cache.

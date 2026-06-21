@@ -12,8 +12,8 @@ variable, Git-authentication mode, metric, and operational concern.
 
 leancd is a minimal, low-memory continuous-delivery controller for Kubernetes.
 It syncs plain YAML manifests from a Git repository into the cluster it runs
-in, detects drift, and self-heals — with a hard process-RSS budget of
-**≤ 100MiB**.
+in, detects drift, and self-heals — with a hard process-RSS budget it keeps
+minimal.
 
 One running process syncs exactly one Git repository (one branch, one set of
 paths). To manage multiple repositories, run multiple leancd processes
@@ -386,7 +386,7 @@ text-format output).
 | `leancd_managed_resources` | observable gauge | — | Number of resources managed by leancd |
 | `leancd_rss_bytes` | observable gauge | — | Process resident set size in bytes (read at each collection) |
 
-`leancd_rss_bytes` is the headline metric: it must stay under the 100MiB budget
+`leancd_rss_bytes` is the headline metric: it must stay under the RSS budget
 at both the sync peak and idle. It is read fresh at each collection from
 `/proc/<pid>/statm` via an observable-gauge callback, so it reflects the live
 footprint.
@@ -481,8 +481,8 @@ It covers all of leancd's metrics in one view:
 
 | Panel | Metric(s) | What it shows |
 |---|---|---|
-| RSS (memory budget ≤ 100MiB) | `leancd_rss_bytes` | Current RSS, thresholds at 80/100 MiB (the headline budget) |
-| RSS over time | `leancd_rss_bytes` | RSS trend with a 100MiB threshold line |
+| RSS (memory budget) | `leancd_rss_bytes` | Current RSS, with threshold lines at the warning and budget levels |
+| RSS over time | `leancd_rss_bytes` | RSS trend with a budget threshold line |
 | Sync error ratio (5m) | `leancd_sync_errors_total`, `leancd_sync_total` | `rate(errors[5m]) / rate(total[5m])` |
 | Time since last successful sync | `leancd_sync_last_success_timestamp_seconds` | `time() - last_success` — the same freshness signal `leancd health` uses |
 | Managed resources | `leancd_managed_resources` | Current managed-resource count |
@@ -539,10 +539,10 @@ re-claims them). Keep it stable across the lifetime of a deployment.
 
 ### 8.5 Resource limits
 
-The shipped Deployment requests 32Mi/50m and limits 128Mi/200m. The 100MiB
+The shipped Deployment requests 32Mi/50m and limits 128Mi/200m. The RSS
 budget is for the **process**; the 128Mi limit leaves headroom. If you tighten
-the limit below ~110Mi you risk OOM-killing leancd during a sync peak; if you
-raise it you lose the safety net the budget provides. See [`../bench/`](../bench/)
+the limit too close to the process budget you risk OOM-killing leancd during a
+sync peak; if you raise it you lose the safety net the budget provides. See [`../bench/`](../bench/)
 to verify on your hardware and manifest scale.
 
 ## 9. Operations
@@ -649,7 +649,7 @@ These are deliberately out of scope (see [`../README.md`](../README.md)):
 
 ## 13. Glossary
 
-- **RSS** — resident set size; the process memory leancd keeps under 100MiB.
+- **RSS** — resident set size; the process memory leancd keeps minimal.
 - **SSA** — server-side apply; Kubernetes merges manifests server-side under a
   field manager.
 - **Drift** — the live cluster state diverges from the Git-declared state.
