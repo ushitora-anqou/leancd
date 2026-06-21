@@ -12,7 +12,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`--backoff-base`/`--backoff-max`) on consecutive sync failures, capped,
   jittered (`[0.75x, 1.0x)` to avoid synchronisation), and reset to the poll
   interval on success.
-- **Graceful shutdown**: `--shutdown-timeout` makes the controller finish the
+- **Graceful shutdown**: `--shutdown-timeout-secs` makes the controller finish the
   in-flight reconciliation pass on SIGTERM, falling back to abort after the
   grace period (no more mid-pass abort).
 - **`leancd health`**: a new subcommand for liveness/readiness `exec` probes

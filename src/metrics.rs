@@ -181,7 +181,7 @@ pub fn init_meter_provider() -> Result<SdkMeterProvider> {
     Ok(provider)
 }
 
-/// Current process RSS in bytes from `/proc/self/status`, if available.
+/// Current process RSS in bytes from `/proc/self/statm`, if available.
 pub fn current_rss_bytes() -> Option<u64> {
     let me = procfs::process::Process::myself().ok()?;
     let statm = me.statm().ok()?;

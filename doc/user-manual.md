@@ -42,7 +42,9 @@ Every applied manifest gets a label injected (default
 `app.kubernetes.io/managed-by=leancd`, configurable via `--managed-label-key`/
 `--managed-label-value`). This label is used by drift detection and pruning to
 find the resources leancd owns, so it must be stable for the lifetime of a
-deployment. The state ConfigMap is labelled with it too.
+deployment. The state ConfigMap deliberately carries **no** managed-by label —
+the prune safety-net lists live resources by that label, so an unlabelled state
+ConfigMap is invisible to pruning and leancd never deletes its own state.
 
 ### The state ConfigMap
 
@@ -586,7 +588,7 @@ The shipped `ClusterRole` is intentionally broad — `apiGroups: ["*"]`,
 manifests including CRDs and cluster-scoped resources. **Narrow it in
 production** to the `apiGroups`/`resources`/namespaces leancd should manage.
 Because drift detection and pruning list resources filtered by the managed-by
-label, leancd needs `list` (and `get`/`watch`) on the kinds it manages, plus
+label, leancd needs `list` (and `get`) on the kinds it manages, plus
 `create`/`update`/`patch` (apply) and `delete` (prune).
 
 ### 9.5 Upgrading

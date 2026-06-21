@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Run as a long-lived controller: metrics server + polling reconciliation loop.
+/// Run as a long-lived controller: OTLP metric export + polling reconciliation loop.
 async fn run_controller(cfg: config::Config) -> Result<()> {
     let client = Client::try_default().await?;
     let provider = metrics::init_meter_provider()?;

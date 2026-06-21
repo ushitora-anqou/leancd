@@ -321,8 +321,8 @@ The RSS budget is verified by an automated benchmark that runs the same
 in-cluster code paths as a host process against a kind cluster:
 
 ```sh
-make bench        # single run at the default scale (200 resources)
-make scale        # RSS across 100/300/500 resources
+make bench        # single run at the default scale (15 namespaces × 18 resources)
+make scale        # RSS across 8/15/20 namespaces
 ```
 
 This is not required to use leancd, but it verifies the memory-budget guarantee on

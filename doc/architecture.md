@@ -56,7 +56,7 @@ background state, shallow clones, streaming parses, and a single-threaded runtim
 
 ## 2. Module map
 
-`src/` contains fifteen modules. `reconcile` is the hub; `kube_util` is the only
+`src/` contains fifteen library modules plus the `main` entry point. `reconcile` is the hub; `kube_util` is the only
 boundary that touches the Kubernetes API; `main` wires the runtime.
 
 | Module | Responsibility |
@@ -251,7 +251,7 @@ would dominate RSS on large clusters, so it is avoided entirely.
   value and patches it with `Patch::Apply(&obj)` under
   `PatchParams::apply(field_manager).force()`, which always claims ownership of
   conflicting fields.
-- **List / Delete.** `list` supports an optional label selector (used by drift
+- **List / Delete.** `list_all` supports an optional label selector (used by drift
   and prune); `delete` uses foreground cascade deletion
   (`DeleteParams::foreground()` → `propagationPolicy: Foreground`) so an owner
   resource is held behind a `foregroundDeletion` finalizer until its dependents
@@ -329,10 +329,10 @@ deliberately does NOT stamp the managed-by label on it — the prune safety-net
 lists live resources by that label, so an unlabelled state ConfigMap is
 invisible to prune and leancd will not delete its own state every pass (BUG 2);
 `state::read` returns `None` on a 404 (first run).
-The `State` struct round-trips to/from a `BTreeMap<String,String>` of plain
-string data:
+The `State` struct is serialized to JSON and stored under a single ConfigMap
+data key, `state`:
 
-| Key | Meaning |
+| `State` field | Meaning |
 |---|---|
 | `last_sha` | Last applied commit SHA (empty ⇒ absent) |
 | `last_sync_epoch` | Last sync, Unix seconds |
@@ -399,7 +399,7 @@ footprint at collection time.
   `backoff_delay` (`backoff_base`·2ⁿ, capped at `backoff_max`), jittered to
   `[0.75x, 1.0x)`, before the next attempt, resetting to `poll_interval` on
   success. Shutdown is cooperative (see
-  [§3](#3-the-single-binary-and-its-three-subcommands)).
+  [§3](#3-the-single-binary-and-its-four-subcommands)).
 - **`main`'s top-level errors** use `anyhow` (exit non-zero); library code uses
   `crate::error::{Error, Result}` (a `thiserror` enum).
 

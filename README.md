@@ -71,6 +71,10 @@ Key flags:
 | `--path` | `LEANCD_PATH` | . | glob patterns of manifest directories (recursive; repeatable; comma-separated via env, e.g. `live/*/prod`) |
 | `--poll-interval` | `LEANCD_POLL_INTERVAL` | 60s | reconciliation interval |
 | `--hook-timeout-secs` | `LEANCD_HOOK_TIMEOUT_SECS` | 300 | per-hook (Job/Pod) completion timeout before it is treated as failed |
+| `--backoff-base` | `LEANCD_BACKOFF_BASE` | 5s | base delay for exponential backoff on consecutive sync failures |
+| `--backoff-max` | `LEANCD_BACKOFF_MAX` | 10m | maximum backoff delay (resets to poll-interval on success) |
+| `--shutdown-timeout-secs` | `LEANCD_SHUTDOWN_TIMEOUT_SECS` | 28 | grace period for the in-flight pass on SIGTERM (≤ Pod terminationGracePeriodSeconds) |
+| `--health-stale-factor` | `LEANCD_HEALTH_STALE_FACTOR` | 10 | `leancd health` reports stale when the last sync is older than poll-interval × this |
 | `--lock-lease-duration-secs` | `LEANCD_LOCK_LEASE_DURATION_SECS` | 60 | reconcile-exclusion Lease lifetime (s); concurrent controller+sync passes are serialized via a Lease (one at a time) |
 | `--lock-wait-timeout-secs` | `LEANCD_LOCK_WAIT_TIMEOUT_SECS` | 30 | seconds to wait for the reconcile Lease when another pass holds it before skipping with a "busy" INFO log (not an error) |
 | `--namespace` | `LEANCD_NAMESPACE` | default | leancd's namespace |
@@ -136,7 +140,7 @@ make e2e        # kind cluster + in-cluster Forgejo + leancd
 The e2e suite spins up an ephemeral `kind` cluster and runs **Forgejo and
 leancd as in-cluster Pods** (leancd is built into a container image via the
 root [`Dockerfile`](Dockerfile) and loaded into the kind node). It drives
-leancd's intended behaviour end-to-end across ~35 scenarios: initial apply, Git
+leancd's intended behaviour end-to-end across ~40 scenarios: initial apply, Git
 change detection + steady-state drift-check, drift self-heal, prune, state
 ConfigMap, the `sync`/`status` CLI, OTLP metrics, cluster- and
 namespaced-scope resources, CRDs, the controller polling loop, HTTPS basic-auth
