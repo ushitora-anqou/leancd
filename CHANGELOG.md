@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.1.1] - 2026-06-22
+
 ### Added — production readiness
 
 - **Backoff on failure**: the controller now backs off exponentially

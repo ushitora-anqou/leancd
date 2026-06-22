@@ -2,8 +2,8 @@ apiVersion: v2
 name: leancd
 description: A minimal, low-memory Kubernetes continuous-delivery controller that syncs plain YAML manifests from a Git repository into the cluster.
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.1.1
+appVersion: "0.1.1"
 home: https://github.com/ushitora-anqou/leancd
 sources:
   - https://github.com/ushitora-anqou/leancd
