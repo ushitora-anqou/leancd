@@ -106,6 +106,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a dated `[X.Y.Z]` heading, runs the full local gate, then commits, tags, and
   pushes — triggering `release.yml` end to end. `RELEASE_DRYRUN=1 make
   release` previews the bump without pushing.
+- **Version-agnostic chart template check**: the `nix flake check`
+  `helm-template` assertion now reads `Chart.appVersion` dynamically instead of
+  hard-coding `0.1.0`, so it survives the version bump `make release` performs.
 
 ### Fixed — release
 

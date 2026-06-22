@@ -169,10 +169,13 @@
               echo "unexpected NetworkPolicy in cluster mode" >&2
               exit 1
             fi
-            # Default image tracks Chart.AppVersion (0.1.0) from the published GHCR
-            # repo, with no explicit image.tag (see deployment.yaml). Anchored so a
-            # hypothetical 0.1.0-rc1 wouldn't falsely match.
-            grep -qE 'image: "ghcr.io/ushitora-anqou/leancd:0\.1\.0"$' cluster.yaml
+            # Default image tracks Chart.AppVersion from the published GHCR repo,
+            # with no explicit image.tag (see deployment.yaml). Read appVersion
+            # dynamically so this stays correct across version bumps; escape the
+            # dots so a hypothetical X.Y.Z-rc1 can't falsely match.
+            appver=$(grep -E '^appVersion:' charts/leancd/Chart.yaml | awk '{print $2}' | tr -d '"')
+            appver_re=$(printf '%s' "$appver" | sed 's/\./\\./g')
+            grep -qE "image: \"ghcr.io/ushitora-anqou/leancd:$appver_re\"$" cluster.yaml
 
             # (2) Namespaced posture.
             helm template leancd charts/leancd \
