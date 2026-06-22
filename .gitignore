@@ -27,3 +27,6 @@ result*
 .envrc
 .direnv
 misc
+
+# Helm chart packages (built by the release workflow; never committed)
+*.tgz

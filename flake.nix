@@ -169,6 +169,10 @@
               echo "unexpected NetworkPolicy in cluster mode" >&2
               exit 1
             fi
+            # Default image tracks Chart.AppVersion (0.1.0) from the published GHCR
+            # repo, with no explicit image.tag (see deployment.yaml). Anchored so a
+            # hypothetical 0.1.0-rc1 wouldn't falsely match.
+            grep -qE 'image: "ghcr.io/ushitora-anqou/leancd:0\.1\.0"$' cluster.yaml
 
             # (2) Namespaced posture.
             helm template leancd charts/leancd \
@@ -209,6 +213,29 @@
               --set-json 'extraEnv=[{"name":"OTEL_METRIC_EXPORT_INTERVAL","value":"5000"}]' > extra.yaml
             grep -q "OTEL_METRIC_EXPORT_INTERVAL" extra.yaml
 
+            # (7) image.tag override still wins over Chart.AppVersion.
+            helm template leancd charts/leancd --set image.tag=canary > img.yaml
+            grep -qE 'image: "ghcr.io/ushitora-anqou/leancd:canary"$' img.yaml
+
+            touch $out
+          '';
+
+          # Assert the chart version/appVersion match the Cargo package version,
+          # so a half-bumped release (tag != chart != binary) is caught locally by
+          # `nix flake check` before tag push. Pure grep/awk/tr — no extra deps.
+          chart-version-consistency = pkgs.runCommand "chart-version-consistency" {} ''
+            chart_ver=$(grep -E '^version:'   ${chartSrc}/leancd/Chart.yaml | awk '{print $2}')
+            app_ver=$(grep -E '^appVersion:'  ${chartSrc}/leancd/Chart.yaml | awk '{print $2}' | tr -d '"')
+            cargo_ver=$(grep -E '^version'    ${./Cargo.toml} | head -1 | awk -F'"' '{print $2}')
+            echo "chart=$chart_ver appVersion=$app_ver cargo=$cargo_ver"
+            [ "$chart_ver" = "$cargo_ver" ] || {
+              echo "ERROR: Chart.yaml version ($chart_ver) != Cargo.toml version ($cargo_ver)" >&2
+              exit 1
+            }
+            [ "$app_ver" = "$cargo_ver" ] || {
+              echo "ERROR: Chart.yaml appVersion ($app_ver) != Cargo.toml version ($cargo_ver)" >&2
+              exit 1
+            }
             touch $out
           '';
         };

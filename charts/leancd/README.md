@@ -6,6 +6,9 @@ but far smaller. See the project [README](../../README.md) for what leancd does.
 
 ## Install
 
+The published chart is on GHCR as an OCI artifact — install it directly (OCI
+needs no `helm repo add`):
+
 ```sh
 # 1. Namespace + Git credentials (omit the Secret for a public repo).
 kubectl create namespace leancd
@@ -13,22 +16,23 @@ kubectl -n leancd create secret generic leancd-git-credentials \
   --from-literal=GIT_USERNAME=<user> --from-literal=GIT_PASSWORD=<token>
 # (For SSH: --from-file=GIT_SSH_KEY=$HOME/.ssh/id_ed25519)
 
-# 2. Install the chart.
-helm install leancd ./charts/leancd \
+# 2. Install the chart. The default image resolves to Chart.appVersion, so no
+#    image.* override is needed for the published build.
+helm install leancd oci://ghcr.io/ushitora-anqou/charts/leancd \
+  --version X.Y.Z \
   --namespace leancd --create-namespace \
   --set config.repoUrl=https://github.com/example/manifests.git
 
 kubectl -n leancd wait --for=condition=Available deploy/leancd --timeout=240s
 ```
 
-A prebuilt multi-arch image is published to GHCR on each `v*` tag — point the
-chart at it instead of a locally-built `leancd:latest`:
+To install from a local checkout instead (e.g. development), point `helm` at the
+chart directory:
 
 ```sh
-helm install leancd ./charts/leancd -n leancd --create-namespace \
-  --set config.repoUrl=<your repo> \
-  --set image.repository=ghcr.io/ushitora-anqou/leancd \
-  --set image.tag=latest
+helm install leancd ./charts/leancd \
+  --namespace leancd --create-namespace \
+  --set config.repoUrl=https://github.com/example/manifests.git
 ```
 
 ## RBAC posture
@@ -55,7 +59,7 @@ listener — metrics reach Grafana via the OTLP collector set with
 
 | Key | Default | Description |
 |---|---|---|
-| `image.repository` / `image.tag` | `leancd` / `latest` | Container image; set to `ghcr.io/ushitora-anqou/leancd` for the published build |
+| `image.repository` / `image.tag` | `ghcr.io/ushitora-anqou/leancd` / `Chart.appVersion` | Container image; `tag` defaults to `Chart.appVersion`, override to pin a version |
 | `config.repoUrl` | `https://github.com/example/manifests.git` | Git repository to sync (override me) |
 | `config.branch` / `config.path` | `main` / `.` | Branch and path globs to sync |
 | `config.pollInterval` | `60s` | Reconcile poll interval |

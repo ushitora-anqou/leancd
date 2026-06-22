@@ -4,10 +4,9 @@
 
 # --- Container image ---
 image:
-  # deploy/leancd.yaml parity. For the published multi-arch image set
-  # repository to ghcr.io/ushitora-anqou/leancd.
-  repository: leancd
-  tag: latest
+  # Published multi-arch image on GHCR. The tag defaults to Chart.appVersion
+  # (see templates/deployment.yaml); set image.tag explicitly to override.
+  repository: ghcr.io/ushitora-anqou/leancd
   pullPolicy: IfNotPresent
 
 # --- Namespace ---

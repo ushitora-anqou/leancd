@@ -1,16 +1,28 @@
-# Build and publish a multi-arch container image to GHCR on version tags.
-# Triggers on `v*` tags (e.g. v0.2.0). Produces linux/amd64 + linux/arm64 and
-# tags them with the semver, major.minor, and `latest`. The git SHA is passed
-# as a build arg so `leancd --version` reports the exact source (see build.rs).
-name: Release (container image)
+# Release leancd on version tags (`v*`). A single `vX.Y.Z` tag publishes three
+# artifacts at the same version:
+#
+#   build-and-push — multi-arch container image (amd64 + arm64) to GHCR, tagged
+#                    semver / major.minor / latest. The git SHA is passed as a
+#                    build arg so `leancd --version` reports the exact source
+#                    (see build.rs).
+#   chart          — packages the Helm chart and pushes it to GHCR as an OCI
+#                    artifact (oci://ghcr.io/ushitora-anqou/charts/leancd),
+#                    distinct from the image package. Runs in parallel with the
+#                    image build (no data dependency). OCI tags are immutable, so
+#                    a `helm pull` guard skips the push when the version already
+#                    exists (idempotent re-runs of a failed job).
+#   release        — creates the GitHub Release with notes extracted from
+#                    CHANGELOG.md (falling back to auto-generated notes) and
+#                    attaches the chart `.tgz`. Needs both upstream jobs.
+name: Release (container image + Helm chart)
 
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: read
-  packages: write
+  contents: write # create the GitHub Release
+  packages: write # push the image + chart to GHCR
 
 jobs:
   build-and-push:
@@ -57,3 +69,103 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  chart:
+    name: Package & publish Helm chart (OCI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Resolve version
+        run: |
+          V="${GITHUB_REF_NAME#v}"
+          [ -n "$V" ] || { echo "empty version from tag $GITHUB_REF_NAME" >&2; exit 1; }
+          echo "V=$V" >> "$GITHUB_ENV"
+
+      # Defense in depth: Chart.yaml must already be bumped to match the tag
+      # (enforced locally by `nix flake check`'s chart-version-consistency).
+      - name: Assert Chart.yaml matches tag
+        run: |
+          chart_ver=$(grep -E '^version:' charts/leancd/Chart.yaml | awk '{print $2}')
+          [ "$chart_ver" = "$V" ] || {
+            echo "Chart.yaml version ($chart_ver) != tag ($V)" >&2
+            exit 1
+          }
+
+      - name: Package chart
+        run: helm package --version "$V" --app-version "$V" charts/leancd
+
+      - name: Lint packaged chart
+        run: helm lint "leancd-$V.tgz"
+
+      - name: Log in to GHCR (helm)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      # OCI tags are immutable: re-running a failed `chart` job would 409 on
+      # `helm push`. Pull first and skip the push if the version is already
+      # published — idempotent re-runs without masking a genuine failure.
+      - name: Skip push if version already published
+        run: |
+          mkdir -p /tmp/pullcheck
+          if helm pull "oci://ghcr.io/ushitora-anqou/charts/leancd" --version "$V" --destination /tmp/pullcheck >/dev/null 2>&1; then
+            echo "version $V already in GHCR — skipping push"
+            echo "skip_push=true" >> "$GITHUB_ENV"
+          else
+            echo "skip_push=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Push chart (OCI)
+        if: env.skip_push != 'true'
+        run: helm push "leancd-$V.tgz" "oci://ghcr.io/ushitora-anqou/charts"
+
+      - name: Upload chart artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chart
+          path: "leancd-$V.tgz"
+
+  release:
+    name: Create GitHub Release
+    needs: [build-and-push, chart]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        run: echo "V=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      # Extract the `## [X.Y.Z] - YYYY-MM-DD` section from CHANGELOG.md. Falls
+      # back to GitHub's auto-generated notes if the section is absent.
+      - name: Extract release notes from CHANGELOG
+        run: |
+          if awk -v v="$V" '
+            $0 ~ "^## \\[" v "\\]" {found=1; print; next}
+            found && /^## \[/ {exit}
+            found {print}
+          ' CHANGELOG.md > /tmp/notes.md && [ -s /tmp/notes.md ]; then
+            echo "extracted=true" >> "$GITHUB_ENV"
+          else
+            echo "extracted=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Download chart artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: chart
+
+      - name: Create release (CHANGELOG notes)
+        if: env.extracted == 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          body_path: /tmp/notes.md
+          files: leancd-${{ env.V }}.tgz
+
+      - name: Create release (auto-generated notes)
+        if: env.extracted != 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          files: leancd-${{ env.V }}.tgz

@@ -47,6 +47,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tests across the value variations; `make e2e` gained a
   `helm_install_deploys_controller` scenario; the dev shell now provides `helm`.
 
+### Added — release & distribution
+
+- **OCI chart publishing**: the Helm chart is now published to GHCR as an OCI
+  artifact (`oci://ghcr.io/ushitora-anqou/charts/leancd`) on every `v*` tag, so
+  it installs with `helm install leancd oci://... --version X.Y.Z` — no
+  `helm repo add`. The `chart` workflow job packages and pushes it (with a
+  `helm pull` guard so re-runs of a failed job are idempotent).
+- **Automated GitHub Release**: the `v*` tag now creates the GitHub Release
+  automatically — notes extracted from the `CHANGELOG.md` section for the
+  version (falling back to auto-generated notes), with the chart `.tgz` attached.
+- **Chart-version-consistency check**: `nix flake check` now asserts
+  `Chart.yaml`'s `version`/`appVersion` match `Cargo.toml`'s version, catching a
+  half-bumped release before tag push.
+
+### Changed — release & distribution
+
+- **Chart default image**: `image.repository` now defaults to
+  `ghcr.io/ushitora-anqou/leancd` (was the local `leancd`), and the Deployment's
+  image tag resolves to `Chart.appVersion`
+  (`{{ .Values.image.tag | default .Chart.AppVersion }}`), so the published
+  build installs without an `--set image.*` override. Setting `image.tag` still
+  pins a specific version.
+- **Release workflow**: `release.yml` gained `chart` and `release` jobs (image
+  and chart publish in parallel, then the GitHub Release) and was elevated to
+  `contents: write` so it can create the release.
+
 ### Notes
 
 - **BUG 8 (VictoriaMetrics dashboard ConfigMap annotations) reclassified as not

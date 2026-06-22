@@ -85,7 +85,8 @@ metrics, tuning, and troubleshooting, see
 
 ## Deploy
 
-leancd ships as a Helm chart in [`charts/leancd/`](charts/leancd/):
+leancd ships as a Helm chart, published to GHCR as an OCI artifact. Install it
+directly — OCI needs no `helm repo add`:
 
 ```sh
 # Namespace + Git credentials (omit the Secret for a public repo).
@@ -94,7 +95,8 @@ kubectl -n leancd create secret generic leancd-git-credentials \
   --from-literal=GIT_USERNAME=<user> --from-literal=GIT_PASSWORD=<token>
 # (For SSH: --from-file=GIT_SSH_KEY=$HOME/.ssh/id_ed25519.)
 
-helm install leancd charts/leancd \
+helm install leancd oci://ghcr.io/ushitora-anqou/charts/leancd \
+  --version X.Y.Z \
   --namespace leancd --create-namespace \
   --set config.repoUrl=https://github.com/example/manifests.git
 kubectl -n leancd wait --for=condition=Available deploy/leancd --timeout=240s
@@ -102,19 +104,20 @@ kubectl -n leancd wait --for=condition=Available deploy/leancd --timeout=240s
 
 The chart installs the Namespace, ServiceAccount, RBAC, and Deployment, and
 points leancd at your OpenTelemetry Collector over OTLP/HTTP (leancd runs no
-HTTP listener of its own). Override `config.*` values for your repository.
+HTTP listener of its own). The default image resolves to `Chart.appVersion`, so
+no `image.*` override is needed for the published build. Override `config.*`
+values for your repository.
 
-A prebuilt multi-arch image is published to GHCR on each `v*` tag — set
-`image.repository` to `ghcr.io/ushitora-anqou/leancd` and `image.tag` to the
-version (or `latest`) instead of the locally-built `leancd:latest`
-(see [doc/release.md](doc/release.md)). For a tighter production posture, install
-with `--set rbac.namespaced=true` to bind leancd's permissions to selected
-namespaces (RoleBindings) and ship a default-deny `NetworkPolicy`. The Grafana
-dashboard ships as a `grafana_dashboard`-labelled ConfigMap
-(`--set dashboards.enabled=true`, on by default).
+For a tighter production posture, install with `--set rbac.namespaced=true` to
+bind leancd's permissions to selected namespaces (RoleBindings) and ship a
+default-deny `NetworkPolicy`. The Grafana dashboard ships as a
+`grafana_dashboard`-labelled ConfigMap (`--set dashboards.enabled=true`, on by
+default).
 
-See [charts/leancd/README.md](charts/leancd/README.md) for the full values
-reference.
+To install from a local checkout (e.g. development), point `helm` at the chart
+directory: `helm install leancd charts/leancd ...`. See
+[doc/release.md](doc/release.md) for the release process and
+[charts/leancd/README.md](charts/leancd/README.md) for the full values reference.
 
 For a hands-on walkthrough deploying leancd into a local `kind` cluster
 (including an optional in-cluster Forgejo Git server), see
