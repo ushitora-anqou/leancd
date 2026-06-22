@@ -1,4 +1,4 @@
-.PHONY: all build test test-unit fmt bench scale e2e
+.PHONY: all build test test-unit fmt bench scale e2e release
 
 all: fmt build test-unit
 
@@ -30,3 +30,12 @@ e2e:
 fmt:
 	cargo fmt
 	taplo fmt Cargo.toml taplo.toml deny.toml
+
+# Cut a release: bumps the patch version (Cargo.toml + Chart.yaml
+# version/appVersion), moves the CHANGELOG [Unreleased] section under a dated
+# [X.Y.Z] heading, runs the full local gate, then commits, signs a tag, and
+# pushes (triggers .github/workflows/release.yml end to end). Write the
+# changelog entries under [Unreleased] first. Env RELEASE_DRYRUN=1 previews
+# the bump without committing/tagging/pushing.
+release:
+	./scripts/release.sh

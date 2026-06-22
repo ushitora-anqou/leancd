@@ -92,6 +92,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `livenessProbe.httpGet.httpHeaders: null` / `initialDelaySeconds: 0`;
   vmalertmanager Secret `stringData`) — `drift_count` now stays 0.
 
+### Changed — release tooling
+
+- **amd64-only image**: the release workflow no longer builds `linux/arm64`
+  (QEMU emulation added ~50 min per release); images are now `linux/amd64`
+  only, cutting the build-and-push job from ~52 min to a few minutes.
+- **GitHub Actions on Node 24**: bumped `actions/checkout`, `upload-artifact`,
+  `download-artifact`, `docker/setup-buildx-action`, `docker/login-action`,
+  `docker/build-push-action`, and `azure/setup-helm` to their current majors,
+  clearing the Node.js 20 deprecation warnings.
+- **One-command release (`make release`)**: bumps the patch version across
+  `Cargo.toml` + `Chart.yaml`, moves the CHANGELOG `[Unreleased]` section under
+  a dated `[X.Y.Z]` heading, runs the full local gate, then commits, signs a
+  tag, and pushes — triggering `release.yml` end to end. `RELEASE_DRYRUN=1 make
+  release` previews the bump without pushing.
+
+### Fixed — release
+
+- **Chart artifact upload**: the `chart` job uploaded the Helm tarball under the
+  literal path `leancd-$V.tgz` (`$V` is not expanded inside `with:`), so no
+  artifact was published and the `release` job failed with "Artifact not found"
+  on the v0.1.0 tag. The path now uses `leancd-${{ env.V }}.tgz`.
+
 ## [0.1.0] - 2026-06-13
 
 Initial public baseline: Git-to-cluster sync, server-side apply, drift

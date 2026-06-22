@@ -4,7 +4,7 @@
 
 # --- Container image ---
 image:
-  # Published multi-arch image on GHCR. The tag defaults to Chart.appVersion
+  # Published amd64 image on GHCR. The tag defaults to Chart.appVersion
   # (see templates/deployment.yaml); set image.tag explicitly to override.
   repository: ghcr.io/ushitora-anqou/leancd
   pullPolicy: IfNotPresent

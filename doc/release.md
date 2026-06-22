@@ -2,47 +2,52 @@
 
 How to cut a Lean CD release. A single `vX.Y.Z` tag publishes the container
 image, the Helm chart, and a GitHub Release — all at the same version — via
-[`.github/workflows/release.yml`](../.github/workflows/release.yml). The steps
-below are the manual parts around it.
+[`.github/workflows/release.yml`](../.github/workflows/release.yml). The manual
+work is one command: `make release`.
 
-## 1. Prepare the release
+## 1. Write the changelog
 
-- Move the `[Unreleased]` entries in [`CHANGELOG.md`](../CHANGELOG.md) under a
-  new `[X.Y.Z] - YYYY-MM-DD` heading.
-- Bump the version to the same `X.Y.Z` in three places (`nix flake check`'s
-  `chart-version-consistency` fails if they diverge):
-  - `version = "..."` in [`Cargo.toml`](../Cargo.toml),
-  - `version:` in [`charts/leancd/Chart.yaml`](../charts/leancd/Chart.yaml),
-  - `appVersion:` in the same `Chart.yaml` — this is the image tag the chart
-    resolves to by default (see `charts/leancd/templates/deployment.yaml`).
-- Run the full local gate:
+Add the release's entries under `[Unreleased]` in
+[`CHANGELOG.md`](../CHANGELOG.md). `make release` does the mechanical part —
+moving `[Unreleased]` under a dated `[X.Y.Z]` heading — but it does not write
+the entries themselves.
 
-  ```sh
-  make fmt
-  make test        # nix flake check: fmt + clippy -D + nextest + deny + audit
-                   #   + helm lint/template + chart-version-consistency
-  make bench       # optional: confirm RSS stays within budget
-  ```
+## 2. `make release`
 
-## 2. Tag and push
+[`make release`](../Makefile) runs [`scripts/release.sh`](../scripts/release.sh),
+which:
+
+1. bumps the patch version across `Cargo.toml` and `Chart.yaml` (`version` +
+   `appVersion`) — `nix flake check`'s `chart-version-consistency` fails if the
+   three diverge;
+2. moves the `[Unreleased]` section in `CHANGELOG.md` under a new
+   `[X.Y.Z] - YYYY-MM-DD` heading and prepends an empty `[Unreleased]`;
+3. runs the full local gate (`make fmt` + `make test` == `nix flake check`);
+4. commits (`chore(release): vX.Y.Z`), signs a tag (`git tag -s vX.Y.Z`), and
+   pushes `master` and the tag.
+
+The push triggers the release workflow (below). The script refuses to run
+unless you are on `master`, the working tree is clean, `HEAD` matches
+`origin/master`, and a signing key is configured.
+
+Preview the bump without committing/tagging/pushing:
 
 ```sh
-git tag -s vX.Y.Z -m "leancd vX.Y.Z"
-git push origin vX.Y.Z
+RELEASE_DRYRUN=1 make release
 ```
 
 ## 3. The release workflow builds and publishes
 
 Pushing a `v*` tag triggers three jobs:
 
-- **build-and-push** — builds `linux/amd64` and `linux/arm64` images (QEMU +
-  Buildx), embeds the exact git SHA via
-  `--build-arg GIT_SHA=$(git rev-parse --short=8 HEAD)` (see `build.rs`) so
-  `leancd --version` is correct even though `.git` is excluded, and pushes
-  `ghcr.io/ushitora-anqou/leancd:X.Y.Z`, `:X.Y`, and `:latest`.
+- **build-and-push** — builds the `linux/amd64` image (Buildx), embeds the
+  exact git SHA via `--build-arg GIT_SHA=$(git rev-parse --short=8 HEAD)`
+  (see `build.rs`) so `leancd --version` is correct even though `.git` is
+  excluded, and pushes `ghcr.io/ushitora-anqou/leancd:X.Y.Z`, `:X.Y`, and
+  `:latest`.
 - **chart** — runs in parallel with the image build (no data dependency);
-  packages the chart (`helm package --version X.Y.Z --app-version X.Y.Z`), lints
-  the tarball, and pushes it to GHCR as an OCI artifact at
+  packages the chart (`helm package --version X.Y.Z --app-version X.Y.Z`),
+  lints the tarball, and pushes it to GHCR as an OCI artifact at
   `oci://ghcr.io/ushitora-anqou/charts/leancd` — a package distinct from the
   image. OCI tags are immutable, so the job pulls first and skips the push when
   `X.Y.Z` is already published (idempotent re-runs of a failed job).
@@ -50,7 +55,11 @@ Pushing a `v*` tag triggers three jobs:
   from the `CHANGELOG.md` section for `X.Y.Z` (falling back to auto-generated
   notes) and attaches the chart `.tgz`.
 
-Watch the runs under the repository's **Actions** tab.
+Watch the run:
+
+```sh
+gh run watch
+```
 
 ## 4. First-time GHCR package setup (once)
 
