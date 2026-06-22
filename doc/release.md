@@ -23,12 +23,12 @@ which:
 2. moves the `[Unreleased]` section in `CHANGELOG.md` under a new
    `[X.Y.Z] - YYYY-MM-DD` heading and prepends an empty `[Unreleased]`;
 3. runs the full local gate (`make fmt` + `make test` == `nix flake check`);
-4. commits (`chore(release): vX.Y.Z`), signs a tag (`git tag -s vX.Y.Z`), and
-   pushes `master` and the tag.
+4. commits (`chore(release): vX.Y.Z`), tags (`git tag -a vX.Y.Z`), and pushes
+   `master` and the tag.
 
 The push triggers the release workflow (below). The script refuses to run
-unless you are on `master`, the working tree is clean, `HEAD` matches
-`origin/master`, and a signing key is configured.
+unless you are on `master`, the working tree is clean, and `HEAD` matches
+`origin/master`.
 
 Preview the bump without committing/tagging/pushing:
 

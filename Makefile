@@ -33,7 +33,7 @@ fmt:
 
 # Cut a release: bumps the patch version (Cargo.toml + Chart.yaml
 # version/appVersion), moves the CHANGELOG [Unreleased] section under a dated
-# [X.Y.Z] heading, runs the full local gate, then commits, signs a tag, and
+# [X.Y.Z] heading, runs the full local gate, then commits, tags, and
 # pushes (triggers .github/workflows/release.yml end to end). Write the
 # changelog entries under [Unreleased] first. Env RELEASE_DRYRUN=1 previews
 # the bump without committing/tagging/pushing.

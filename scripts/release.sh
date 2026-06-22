@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Cut a leancd release in one command.
+# Cut a Lean CD release in one command.
 #
 # Bumps the patch version (Cargo.toml + Chart.yaml version/appVersion), moves
 # the [Unreleased] section in CHANGELOG.md under a new dated [X.Y.Z] heading,
-# runs the full local gate, then commits, signs a tag, and pushes — which
+# runs the full local gate, then commits, tags, and pushes — which
 # triggers .github/workflows/release.yml to build the image, publish the chart,
 # and create the GitHub Release.
 #
@@ -31,11 +31,6 @@ git diff --cached --quiet || { echo "release.sh: staged changes present; commit 
 git fetch origin master --quiet
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/master)" ] || {
   echo "release.sh: HEAD != origin/master; push/pull first" >&2
-  exit 1
-}
-
-git config user.signingkey >/dev/null 2>&1 || {
-  echo "release.sh: no git user.signingkey set (required for git tag -s)" >&2
   exit 1
 }
 
@@ -88,7 +83,7 @@ fi
 # --- commit, sign the tag, push (triggers release.yml) -----------------------
 git add -u
 git commit -m "chore(release): v$newv"
-git tag -s "v$newv" -m "leancd v$newv"
+git tag -a "v$newv" -m "Lean CD v$newv"
 git push origin master
 git push origin "v$newv"
 

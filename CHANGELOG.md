@@ -103,8 +103,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clearing the Node.js 20 deprecation warnings.
 - **One-command release (`make release`)**: bumps the patch version across
   `Cargo.toml` + `Chart.yaml`, moves the CHANGELOG `[Unreleased]` section under
-  a dated `[X.Y.Z]` heading, runs the full local gate, then commits, signs a
-  tag, and pushes — triggering `release.yml` end to end. `RELEASE_DRYRUN=1 make
+  a dated `[X.Y.Z]` heading, runs the full local gate, then commits, tags, and
+  pushes — triggering `release.yml` end to end. `RELEASE_DRYRUN=1 make
   release` previews the bump without pushing.
 
 ### Fixed — release
