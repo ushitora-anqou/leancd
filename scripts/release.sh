@@ -61,6 +61,8 @@ awk -v new="## [$newv] - $date" '
 
 # --- bump Cargo.toml + Chart.yaml (version/appVersion) -----------------------
 sed -i -E 's/^version = "[0-9]+\.[0-9]+\.[0-9]+"$/version = "'"$newv"'"/' Cargo.toml
+# Sync Cargo.lock to the new version (nix flake check builds with --locked).
+cargo update -p leancd --precise "$newv" >/dev/null
 sed -i -E 's/^version: .+$/version: '"$newv"'/' charts/leancd/Chart.yaml
 sed -i -E 's/^appVersion: ".*"$/appVersion: "'"$newv"'"/' charts/leancd/Chart.yaml
 
