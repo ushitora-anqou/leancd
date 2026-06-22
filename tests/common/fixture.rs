@@ -1,4 +1,4 @@
-//! Ephemeral kind cluster + leancd image + in-cluster Forgejo, shared across
+//! Ephemeral kind cluster + Lean CD image + in-cluster Forgejo, shared across
 //! all scenarios via a process-wide `OnceLock`. `Drop` tears the cluster down
 //! (Pods included).
 
@@ -18,7 +18,7 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// The shared, lazily-initialised fixture.
+    /// The shared, lazily-initialized fixture.
     pub fn get() -> &'static Fixture {
         static FIXTURE: OnceLock<Fixture> = OnceLock::new();
         FIXTURE.get_or_init(Fixture::start)
@@ -34,7 +34,7 @@ impl Fixture {
         // Fresh cluster: delete any leftover, then create.
         let _ = run(&["kind", "delete", "cluster", "--name", CLUSTER_NAME]);
         run(&["kind", "create", "cluster", "--name", CLUSTER_NAME]);
-        // Build the leancd image and load it into the kind node.
+        // Build the Lean CD image and load it into the kind node.
         run(&["docker", "build", "-t", "leancd:latest", "."]);
         // Sanity: the image is the real binary, not the throwaway `fn main(){}`
         // dummy that BuildKit + Cargo's mtime fingerprint can ship (BUG 1).
@@ -67,10 +67,10 @@ impl Fixture {
         );
         // Deploy in-cluster Forgejo.
         let forgejo = Forgejo::deploy();
-        // A repo the dormant controller points at (auto-initialised on `main`
+        // A repo the dormant controller points at (auto-initialized on `main`
         // so its first reconcile clones cleanly without touching scenario state).
         forgejo.create_repo("controller-idle", true);
-        // Deploy in-cluster leancd + OTel collector (metrics over OTLP/HTTP).
+        // Deploy in-cluster Lean CD + OTel collector (metrics over OTLP/HTTP).
         run(&["kubectl", "apply", "-f", "tests/leancd.yaml"]);
         run(&[
             "kubectl",

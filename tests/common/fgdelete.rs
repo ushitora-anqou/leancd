@@ -1,6 +1,6 @@
 //! Foreground-cascade deletion proof helpers.
 //!
-//! leancd deletes every resource with `DeleteParams::foreground()`. Foreground
+//! Lean CD deletes every resource with `DeleteParams::foreground()`. Foreground
 //! cascade — unlike background — stamps a `foregroundDeletion` finalizer on the
 //! owner and removes its dependents first. To prove this deterministically
 //! without racing the kind garbage collector, a scenario parks a custom *stall*
@@ -19,7 +19,7 @@ use std::time::Duration;
 use crate::common::{kubectl, wait};
 
 /// The finalizer the kube apiserver stamps on an owner during foreground
-/// deletion. Its presence is the proof that leancd deleted in the foreground.
+/// deletion. Its presence is the proof that Lean CD deleted in the foreground.
 pub const FOREGROUND_FINALIZER: &str = "foregroundDeletion";
 
 /// A throwaway finalizer parked on a dependent to stall cascade deletion so the

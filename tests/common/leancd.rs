@@ -1,11 +1,11 @@
-//! Run leancd subcommands inside the in-cluster Deployment, and launch
+//! Run Lean CD subcommands inside the in-cluster Deployment, and launch
 //! short-lived controller Jobs for scenarios that need active polling.
 
 use std::process::Command;
 
 use crate::common::kubectl;
 
-/// Outcome of running a leancd subcommand via `kubectl exec`. `exit_code` is
+/// Outcome of running a Lean CD subcommand via `kubectl exec`. `exit_code` is
 /// the process exit status (or -1 when kubectl did not report one); `leancd
 /// health` uses distinct codes (0=fresh, 1=never, 2=stale, 3=failing).
 pub struct RunResult {
@@ -15,7 +15,7 @@ pub struct RunResult {
     pub stderr: String,
 }
 
-/// Run `leancd sync [args]` in the leancd Deployment.
+/// Run `leancd sync [args]` in the Lean CD Deployment.
 pub fn sync(args: &[String]) -> RunResult {
     exec_leancd("sync", args)
 }
@@ -55,12 +55,12 @@ impl Drop for SyncHandle {
     }
 }
 
-/// Run `leancd status [args]` in the leancd Deployment.
+/// Run `leancd status [args]` in the Lean CD Deployment.
 pub fn status(args: &[String]) -> RunResult {
     exec_leancd("status", args)
 }
 
-/// Run `leancd health [args]` in the leancd Deployment and return its exit
+/// Run `leancd health [args]` in the Lean CD Deployment and return its exit
 /// code (0=fresh, 1=never, 2=stale, 3=failing). For liveness/readiness probe
 /// assertions; the Deployment's env (`LEANCD_NAMESPACE`) is inherited.
 pub fn health(args: &[String]) -> RunResult {
@@ -92,7 +92,7 @@ fn exec_leancd(sub: &str, args: &[String]) -> RunResult {
     }
 }
 
-/// Launch a short-poll (2s) leancd controller as a Job, so a scenario can
+/// Launch a short-poll (2s) Lean CD controller as a Job, so a scenario can
 /// observe automatic reconciliation. `args` are the common flags (the same
 /// `sync_args` used by `sync`). The Job is deleted when the handle drops.
 pub fn controller(name: &str, mut args: Vec<String>) -> ControllerHandle {

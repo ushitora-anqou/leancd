@@ -1,4 +1,4 @@
-//! OpenTelemetry metrics: leancd reports via OTLP/HTTP (push) to a collector.
+//! OpenTelemetry metrics: Lean CD reports via OTLP/HTTP (push) to a collector.
 //!
 //! No HTTP listener is started — metrics are push-based only, so the process
 //! exposes no inbound network surface and keeps its footprint flat. The OTLP
@@ -26,7 +26,7 @@ struct MetricsState {
     drift_per_gvk: HashMap<(String, String, String), i64>,
 }
 
-/// Container for leancd's OpenTelemetry instruments.
+/// Container for Lean CD's OpenTelemetry instruments.
 ///
 /// `Counter`s are incremented directly; the gauges (`last_success_epoch`,
 /// `managed_resources`, `drift_detected`, `rss_bytes`) are observable gauges
@@ -122,7 +122,7 @@ impl Metrics {
         self.state.lock().unwrap().last_success_epoch = v;
     }
 
-    /// Record how many resources leancd currently manages.
+    /// Record how many resources Lean CD currently manages.
     pub fn set_managed_resources(&self, v: i64) {
         self.state.lock().unwrap().managed_resources = v;
     }

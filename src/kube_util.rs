@@ -114,7 +114,7 @@ pub async fn apply(
 
 /// List live resources of a kind across **all** namespaces (namespaced
 /// resources) or cluster-wide (cluster-scoped resources), optionally filtered by
-/// a label selector. Used by drift detection and prune so that resources leancd
+/// a label selector. Used by drift detection and prune so that resources Lean CD
 /// applied in *any* namespace are visible — not only those in
 /// `default_namespace`. (`Api::all_with` lists namespaced kinds across every
 /// namespace.)
@@ -132,7 +132,7 @@ pub async fn list_all(
     Ok(list.items)
 }
 
-/// The [`DeleteParams`] leancd uses for every deletion: Foreground cascade
+/// The [`DeleteParams`] Lean CD uses for every deletion: Foreground cascade
 /// (`propagationPolicy: Foreground`). An owner resource is held behind a
 /// `foregroundDeletion` finalizer until all of its dependents — resources
 /// carrying an `ownerReferences` entry pointing at it — are removed first,
@@ -209,7 +209,7 @@ mod tests {
     /// on apply. (Background: the VM-stack comparison once flagged dashboard
     /// ConfigMaps as missing annotations vs Argo CD; that delta turned out to be
     /// Argo's own tracking-id, never present in the source manifest — so this
-    /// test asserts the leancd side is correct and stays correct.)
+    /// test asserts the Lean CD side is correct and stays correct.)
     #[test]
     fn apply_round_trip_preserves_metadata_annotations() {
         use kube::core::DynamicObject;

@@ -1,8 +1,8 @@
-//! Error types used across leancd.
+//! Error types used across Lean CD.
 
 use thiserror::Error;
 
-/// Top-level error type for leancd.
+/// Top-level error type for Lean CD.
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("git operation failed: {0}")]

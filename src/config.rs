@@ -1,4 +1,4 @@
-//! Runtime configuration for leancd.
+//! Runtime configuration for Lean CD.
 //!
 //! All configuration is provided via command-line flags, and only secrets (git
 //! credentials) are read from the environment, which in Kubernetes are injected
@@ -23,10 +23,10 @@ pub struct Config {
     pub path: Vec<String>,
     /// Reconciliation polling interval.
     pub poll_interval: std::time::Duration,
-    /// Namespace leancd runs in (used for the state ConfigMap and as the
+    /// Namespace Lean CD runs in (used for the state ConfigMap and as the
     /// default namespace for namespaced resources that omit one).
     pub namespace: String,
-    /// Name of the ConfigMap leancd writes its sync state into.
+    /// Name of the ConfigMap Lean CD writes its sync state into.
     pub state_configmap: String,
     /// Local working directory that holds the shallow checkout.
     pub work_dir: String,
@@ -41,7 +41,7 @@ pub struct Config {
     pub git_ssh_key_env: String,
 
     // --- Apply metadata ---
-    /// Label key marking resources managed by leancd (for safe pruning).
+    /// Label key marking resources managed by Lean CD (for safe pruning).
     pub managed_label_key: String,
     /// Label value for the managed-by label.
     pub managed_label_value: String,
@@ -143,7 +143,7 @@ impl Config {
     /// `git fetch`/`reset`/`clone` never touch the same directory at once. A
     /// separate Pod already has its own emptyDir, so the PID suffix is harmless
     /// there. The whole reconcile pass is additionally serialized by the
-    /// `lock.rs` Lease — PID-scoping is the second layer of defence.
+    /// `lock.rs` Lease — PID-scoping is the second layer of defense.
     pub fn effective_work_dir(&self) -> String {
         format!(
             "{}-{}",

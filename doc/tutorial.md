@@ -1,10 +1,10 @@
-# Tutorial: deploy leancd into a kind cluster
+# Tutorial: deploy Lean CD into a kind cluster
 
-This is a hands-on, ~20-minute walkthrough. You will build the leancd image,
+This is a hands-on, ~20-minute walkthrough. You will build the Lean CD image,
 load it into a local `kind` cluster, point it at a Git repository, and watch it
 sync, drift-heal, and prune.
 
-leancd runs **in-cluster as a Deployment** in this tutorial — the same shape you
+Lean CD runs **in-cluster as a Deployment** in this tutorial — the same shape you
 would use in production, just on a local cluster.
 
 > For the complete feature reference (every flag, env var, metric) see
@@ -23,7 +23,7 @@ would use in production, just on a local cluster.
                                    └──────────────────────────────────┘
 ```
 
-leancd runs as a Pod, polls a Git repository, and applies the manifests it finds
+Lean CD runs as a Pod, polls a Git repository, and applies the manifests it finds
 there into the same cluster. In step 4 you choose where that Git repository
 lives: an existing public repo, or a self-hosted Forgejo running inside the
 cluster.
@@ -34,7 +34,7 @@ You need these on your PATH:
 
 | Tool | Why | Check |
 |---|---|---|
-| `docker` | build the leancd image | `docker --version` |
+| `docker` | build the Lean CD image | `docker --version` |
 | `kind` | the local cluster | `kind version` |
 | `kubectl` | talk to the cluster | `kubectl version --client` |
 | `git` | prepare a repository | `git --version` |
@@ -52,10 +52,10 @@ kind create cluster --name leancd-tutorial
 kubectl get nodes   # expect one Ready node
 ```
 
-`kind` writes a kubeconfig to `~/.kube/config`. Once leancd is deployed it uses
+`kind` writes a kubeconfig to `~/.kube/config`. Once Lean CD is deployed it uses
 its in-cluster `ServiceAccount` (no kubeconfig needed inside the Pod).
 
-## 3. Build and load the leancd image
+## 3. Build and load the Lean CD image
 
 ```sh
 docker build -t leancd:latest .
@@ -68,7 +68,7 @@ IfNotPresent`; if the image is not loaded into the kind node, the Pod will
 
 ## 4. Prepare a Git repository
 
-leancd needs a Git repository containing one or more `*.yaml`/`*.yml` manifests.
+Lean CD needs a Git repository containing one or more `*.yaml`/`*.yml` manifests.
 Pick one of the three options below. **4a is the simplest**; **4c is fully
 self-contained** (no external hosting) and mirrors what the e2e test suite does.
 
@@ -108,8 +108,8 @@ git add -A && git -c user.email=d@d -c user.name=demo commit -qm "demo"
 ```
 
 The URL is `file:///home/<you>/leancd-manifests`. **Caveat:** the path must be
-reachable from the leancd Pod. A host path is *not* visible inside a container,
-so `file://` only works when leancd runs as a host process (this is how the RSS
+reachable from the Lean CD Pod. A host path is *not* visible inside a container,
+so `file://` only works when Lean CD runs as a host process (this is how the RSS
 benchmark runs it). For an in-cluster Deployment, use **4a** or **4c**.
 
 ### 4c. An in-cluster Forgejo (fully self-contained)
@@ -142,7 +142,7 @@ kubectl -n forgejo port-forward svc/forgejo 3000:3000
 ```
 
 Create a repository via the API (basic auth with the admin you just created),
-auto-initialised on `main` so you can clone it immediately:
+auto-initialized on `main` so you can clone it immediately:
 
 ```sh
 curl -sS -X POST -u leancd:leancd-e2e-pass \
@@ -170,14 +170,14 @@ git add -A && git -c user.email=d@d -c user.name=demo commit -qm "demo"
 git push    # username: leancd, password: leancd-e2e-pass
 ```
 
-From inside the cluster, leancd reaches this repo at
+From inside the cluster, Lean CD reaches this repo at
 `http://forgejo.forgejo.svc.cluster.local:3000/leancd/manifests.git`. Keep the
-`port-forward` terminal open if you want to keep pushing from your host; leancd
+`port-forward` terminal open if you want to keep pushing from your host; Lean CD
 itself talks to the in-cluster Service URL, not `127.0.0.1`.
 
 ## 5. Create the Git credentials Secret (skip for public repos)
 
-If your repository needs credentials, create the Secret leancd reads via
+If your repository needs credentials, create the Secret Lean CD reads via
 `envFrom`. The variable names (`GIT_USERNAME`/`GIT_PASSWORD` for HTTPS,
 `GIT_SSH_KEY` for SSH) are the defaults; see
 [`./user-manual.md` §6](./user-manual.md) for the full picture.
@@ -204,7 +204,7 @@ kubectl -n leancd create secret generic leancd-git-credentials \
 > kubectl create namespace leancd
 > ```
 
-## 6. Install the leancd chart
+## 6. Install the Lean CD chart
 
 Install the chart pointed at the Forgejo repo, from the repository root (it uses
 the locally-built `leancd:latest` you loaded into `kind` in step 3):
@@ -218,8 +218,8 @@ kubectl wait -n leancd --for=condition=Available deploy/leancd --timeout=240s
 
 (`config.branch`/`config.path` can be overridden the same way if needed.)
 
-If `wait` times out, check the Pod: `kubectl -n leancd describe pod -l
-app.kubernetes.io/name=leancd` and `kubectl -n leancd logs deploy/leancd`. The
+If `wait` times out, check the Pod: `kubectl -n Lean CD describe pod -l
+app.kubernetes.io/name=leancd` and `kubectl -n Lean CD logs deploy/leancd`. The
 two common causes are a missing image (you skipped `kind load` in step 3) and a
 bad repo URL or missing credentials.
 
@@ -252,7 +252,7 @@ kubectl get configmap leancd-demo -o yaml
 ## 8. Push a change and watch Git drive sync
 
 Edit the manifest in your repository, commit, and push (for Forgejo, push
-through the port-forward from step 4c). On the next poll, leancd detects the
+through the port-forward from step 4c). On the next poll, Lean CD detects the
 moved HEAD (`full=true`) and re-applies. The logs show the new SHA.
 
 To trigger a pass immediately instead of waiting:
@@ -269,7 +269,7 @@ Change a field on the live resource directly, bypassing Git:
 kubectl edit configmap leancd-demo   # change a value and save
 ```
 
-On the next steady-state pass (HEAD unchanged), leancd lists the live resource,
+On the next steady-state pass (HEAD unchanged), Lean CD lists the live resource,
 sees it no longer matches Git (`spec_subset` fails), and re-applies. The logs
 report `drift detected; re-applying managed resources`, and the field reverts to
 the Git value.
@@ -277,7 +277,7 @@ the Git value.
 ## 10. Demonstrate prune
 
 Remove the manifest from your repository, commit, and push. On the next pass
-leancd notices the resource is gone from Git and deletes it:
+Lean CD notices the resource is gone from Git and deletes it:
 
 ```
 pruned resource no longer in Git ...
@@ -289,7 +289,7 @@ kubectl get configmap leancd-demo   # NotFound
 
 ## 11. Inspect metrics
 
-leancd pushes metrics over OTLP/HTTP; it serves no endpoint itself. Deploy an
+Lean CD pushes metrics over OTLP/HTTP; it serves no endpoint itself. Deploy an
 OpenTelemetry Collector that receives OTLP and re-exports Prometheus text, then
 port-forward the collector and read its `/metrics`:
 
@@ -321,7 +321,7 @@ make bench        # single run at the default scale (15 namespaces × 18 resourc
 make scale        # RSS across 8/15/20 namespaces
 ```
 
-This is not required to use leancd, but it verifies the memory-budget guarantee on
+This is not required to use Lean CD, but it verifies the memory-budget guarantee on
 your machine. See [`../bench/README.md`](../bench/README.md).
 
 ## 13. Clean up
@@ -336,9 +336,9 @@ from step 4c (its data is on an `emptyDir`, so nothing persists).
 ## 14. Next steps
 
 - [`./migration-from-argocd.md`](./migration-from-argocd.md) — migrating an
-  Argo CD-managed cluster to leancd.
+  Argo CD-managed cluster to Lean CD.
 - [`./user-manual.md`](./user-manual.md) — every flag, tuning, troubleshooting.
 - [`./architecture.md`](./architecture.md) — how reconciliation, drift, and
-  prune actually work, and why leancd is shaped this way.
+  prune actually work, and why Lean CD is shaped this way.
 - For production: narrow the `ClusterRole`, pick a real Git host, and set
   resource limits appropriate to your scale.

@@ -47,7 +47,7 @@ pub async fn detect(
                 continue;
             }
         };
-        // List across ALL namespaces (BUG 5): a resource leancd applied in a
+        // List across ALL namespaces (BUG 5): a resource Lean CD applied in a
         // namespace other than cfg.namespace must still be drift-checked.
         let live = match kube_util::list_all(client, &ar, Some(&label_sel)).await {
             Ok(l) => l,
@@ -184,7 +184,7 @@ fn spec_subset(git: &Value, live: &Value) -> bool {
             }
             l.get(k).is_some_and(|lv| spec_subset(v, lv))
         }),
-        // Arrays: index-aligned recursive subset. leancd applies the array
+        // Arrays: index-aligned recursive subset. Lean CD applies the array
         // itself via SSA, so live preserves Git's element order; extra trailing
         // live elements (server-injected defaults) are tolerated, and each Git
         // element must be a subset of the live element at the same index.

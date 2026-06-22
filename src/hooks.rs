@@ -3,7 +3,7 @@
 //! A resource carrying a `helm.sh/hook` annotation is a *hook*: it is excluded
 //! from the normal apply/prune of "main" resources and instead runs in a sync
 //! phase around the main apply. Phase mapping follows Argo CD (install and
-//! upgrade are indistinguishable in leancd's single apply, so they collapse):
+//! upgrade are indistinguishable in Lean CD's single apply, so they collapse):
 //!
 //! | `helm.sh/hook`               | phase                       |
 //! |------------------------------|-----------------------------|
@@ -340,7 +340,7 @@ async fn run_one(
         Completion::Succeeded
     };
 
-    // Honour hook-succeeded / hook-failed deletion.
+    // Honor hook-succeeded / hook-failed deletion.
     let delete_after = match completion {
         Completion::Succeeded => info.has_policy(HookDeletePolicy::HookSucceeded),
         Completion::Failed => info.has_policy(HookDeletePolicy::HookFailed),

@@ -63,7 +63,7 @@ impl Forgejo {
     }
 
     /// Create a private repo via the API (through a port-forward). When
-    /// `auto_init` is set the repo is initialised with a README on a `main`
+    /// `auto_init` is set the repo is initialized with a README on a `main`
     /// branch, so it can be cloned immediately (used for the idle controller's
     /// repo); otherwise it is empty and the caller pushes the first commit.
     pub fn create_repo(&self, name: &str, auto_init: bool) {
@@ -123,7 +123,7 @@ impl Forgejo {
     }
 }
 
-/// Wait until `forgejo admin user list` succeeds (DB initialised).
+/// Wait until `forgejo admin user list` succeeds (DB initialized).
 fn wait_admin_cli() {
     let deadline = Instant::now() + Duration::from_secs(120);
     while Instant::now() < deadline {

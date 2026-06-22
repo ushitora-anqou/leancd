@@ -1,8 +1,8 @@
-# leancd Helm Chart
+# Lean CD Helm Chart
 
 A minimal, low-memory Kubernetes continuous-delivery controller that syncs plain
 YAML manifests from a Git repository into the cluster — like Argo CD / Flux CD,
-but far smaller. See the project [README](../../README.md) for what leancd does.
+but far smaller. See the project [README](../../README.md) for what Lean CD does.
 
 ## Install
 
@@ -38,10 +38,10 @@ helm install leancd ./charts/leancd \
 ## RBAC posture
 
 - **default** (`rbac.namespaced=false`): a `ClusterRole` bound cluster-wide via
-  a `ClusterRoleBinding`. leancd can apply arbitrary kinds (including CRDs and
+  a `ClusterRoleBinding`. Lean CD can apply arbitrary kinds (including CRDs and
   cluster-scoped resources) wherever they land.
 - **namespaced** (`--set rbac.namespaced=true`): the same `ClusterRole` bound to
-  the leancd namespace only (a `RoleBinding`), plus a default-deny `NetworkPolicy`
+  the Lean CD namespace only (a `RoleBinding`), plus a default-deny `NetworkPolicy`
   allowing egress solely to kube-dns, the API server, the Git host, and the OTLP
   collector. Tighten `networkPolicy.kubeApiCidr` / `networkPolicy.egressCidr` to
   your environment.
@@ -49,9 +49,9 @@ helm install leancd ./charts/leancd \
 ## Grafana dashboard
 
 `dashboards.enabled=true` (the default) ships the overview dashboard as a
-ConfigMap labelled `grafana_dashboard: "1"`. A Grafana running the kiwigrid
+ConfigMap labeled `grafana_dashboard: "1"`. A Grafana running the kiwigrid
 dashboard sidecar (e.g. the VictoriaMetrics or `grafana` helm charts with sidecar
-dashboards enabled) imports it automatically. leancd itself runs no HTTP
+dashboards enabled) imports it automatically. Lean CD itself runs no HTTP
 listener — metrics reach Grafana via the OTLP collector set with
 `metrics.otlpEndpoint`. Disable with `--set dashboards.enabled=false`.
 
@@ -71,5 +71,5 @@ listener — metrics reach Grafana via the OTLP collector set with
 | `resources` | limits 128Mi/200m, requests 32Mi/50m | RSS stays minimal; the limit leaves headroom (see `bench/`) |
 
 Resource names are fixed (`leancd`, `leancd-grafana-dashboard`, …) and do not
-track the release name — leancd is a cluster-scoped singleton. To run more than
+track the release name — Lean CD is a cluster-scoped singleton. To run more than
 one release, install into separate namespaces.

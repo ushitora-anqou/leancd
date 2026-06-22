@@ -50,7 +50,7 @@ pub struct CommonArgs {
     #[arg(long, env = "LEANCD_POLL_INTERVAL", default_value = "60s")]
     pub poll_interval: String,
 
-    /// Namespace leancd runs in.
+    /// Namespace Lean CD runs in.
     #[arg(long, env = "LEANCD_NAMESPACE", default_value = "default")]
     pub namespace: String,
 

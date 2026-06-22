@@ -1,5 +1,5 @@
-//! Read leancd's metrics over a port-forward to the OTel Collector's
-//! Prometheus exporter. leancd itself exposes no HTTP endpoint; it pushes
+//! Read Lean CD's metrics over a port-forward to the OTel Collector's
+//! Prometheus exporter. Lean CD itself exposes no HTTP endpoint; it pushes
 //! OTLP/HTTP to the collector, which re-exports the series here.
 
 use std::process::Command;
@@ -7,7 +7,7 @@ use std::process::Command;
 use crate::common::portforward::PortForward;
 
 /// Scrape the collector's Prometheus exporter once, retrying briefly until
-/// leancd's series appear (the first OTLP export may not have landed yet).
+/// Lean CD's series appear (the first OTLP export may not have landed yet).
 pub fn scrape() -> String {
     let pf = PortForward::new("leancd", "svc/otel-collector", 8889);
     let url = format!("http://127.0.0.1:{}/metrics", pf.local_port);

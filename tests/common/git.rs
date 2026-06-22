@@ -7,7 +7,7 @@ use std::process::Command;
 use crate::common::portforward::PortForward;
 use crate::common::Forgejo;
 
-/// Initialise a local git repo with `files`, commit, and force-push to the
+/// Initialize a local git repo with `files`, commit, and force-push to the
 /// named Forgejo repo over a transient port-forward. Returns the local clone
 /// path (kept around so callers can append more commits and re-push).
 pub fn push_files(forgejo: &Forgejo, repo: &str, files: &[(String, String)]) -> PathBuf {

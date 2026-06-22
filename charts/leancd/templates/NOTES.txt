@@ -1,4 +1,4 @@
-leancd has been installed as a controller in namespace {{ include "leancd.namespace" . }}.
+Lean CD has been installed as a controller in namespace {{ include "leancd.namespace" . }}.
 
 Wait for the Deployment to become Available:
   kubectl -n {{ include "leancd.namespace" . }} wait --for=condition=Available deploy/leancd --timeout=240s
@@ -17,7 +17,7 @@ the Deployment (it is optional, so a public repo needs none):
 {{- end }}
 
 {{- if .Values.dashboards.enabled }}
-The Grafana dashboard is shipped as a ConfigMap labelled
+The Grafana dashboard is shipped as a ConfigMap labeled
 grafana_dashboard: "1". A Grafana instance running the kiwigrid dashboard
 sidecar (VictoriaMetrics / grafana helm charts with sidecar dashboards enabled)
 imports it automatically; otherwise import charts/leancd/dashboards/leancd-overview.json

@@ -1,5 +1,5 @@
 //! Manifest fixtures shared across scenarios. These are plain YAML (no
-//! managed-by label — leancd injects that at apply time).
+//! managed-by label — Lean CD injects that at apply time).
 
 /// A ConfigMap with string `data`.
 pub fn configmap(name: &str, namespace: &str, data: &[(&str, &str)]) -> String {
@@ -50,10 +50,10 @@ fn hook_annotations(hook: &str, weight: Option<i64>, delete_policy: Option<&str>
 
 /// A Helm-hook Job (`batch/v1`) in `ns`. Runs `/bin/sh -c <script>` in the
 /// `leancd:latest` image (present on the kind node, `IfNotPresent`). The hook
-/// annotations live on the Job's own `metadata` (leancd classifies on the
+/// annotations live on the Job's own `metadata` (Lean CD classifies on the
 /// resource metadata, not the Pod template). `backoffLimit: 0` +
 /// `restartPolicy: Never` fix a failure in a single attempt so the Job's
-/// `.status.failed` settles at 1 (no retry churn while leancd polls).
+/// `.status.failed` settles at 1 (no retry churn while Lean CD polls).
 pub fn job_hook(
     name: &str,
     ns: &str,
@@ -86,7 +86,7 @@ pub fn job_hook(
 
 /// A Helm-hook Pod (core `v1`) with `restartPolicy: Never`. Same annotation /
 /// script model as [`job_hook`]. A Pod has no `backoffLimit`; `Never` leaves a
-/// failed Pod in `phase=Failed`, which is what leancd's completion poll reads.
+/// failed Pod in `phase=Failed`, which is what Lean CD's completion poll reads.
 pub fn pod_hook(
     name: &str,
     ns: &str,

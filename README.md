@@ -1,4 +1,4 @@
-# leancd
+# Lean CD
 
 [![CI](https://github.com/ushitora-anqou/leancd/actions/workflows/ci.yml/badge.svg)](https://github.com/ushitora-anqou/leancd/actions/workflows/ci.yml)
 
@@ -18,7 +18,7 @@ by an automated benchmark (see [bench/](bench/)).
 - Prunes resources removed from Git, using **foreground cascade** deletion
   (`propagationPolicy: Foreground`) so dependents are removed before their
   owners — the same policy used for Helm-hook and full-teardown deletions.
-- Honours **Helm hooks** in pre-rendered manifests with Argo CD-equivalent
+- Honors **Helm hooks** in pre-rendered manifests with Argo CD-equivalent
   semantics (`pre-install`/`pre-upgrade` → before the apply, `post-install`/
   `post-upgrade` → after; `pre-delete`/`post-delete` on full teardown), plus
   `helm.sh/hook-weight`, `helm.sh/hook-delete-policy`, and
@@ -36,7 +36,7 @@ by an automated benchmark (see [bench/](bench/)).
 
 Kustomize / Helm-chart *rendering* / Jsonnet, owner-reference traversal,
 notifications, and a web UI — all deliberately omitted to stay small: Argo CD and
-Flux CD ship these but run at hundreds of MiB to GiB of RSS, and leancd trades
+Flux CD ship these but run at hundreds of MiB to GiB of RSS, and Lean CD trades
 them for a far smaller footprint. (Helm *hooks* in already-rendered YAML are
 supported; chart templating is not.)
 
@@ -77,7 +77,7 @@ Key flags:
 | `--health-stale-factor` | `LEANCD_HEALTH_STALE_FACTOR` | 10 | `leancd health` reports stale when the last sync is older than poll-interval × this |
 | `--lock-lease-duration-secs` | `LEANCD_LOCK_LEASE_DURATION_SECS` | 60 | reconcile-exclusion Lease lifetime (s); concurrent controller+sync passes are serialized via a Lease (one at a time) |
 | `--lock-wait-timeout-secs` | `LEANCD_LOCK_WAIT_TIMEOUT_SECS` | 30 | seconds to wait for the reconcile Lease when another pass holds it before skipping with a "busy" INFO log (not an error) |
-| `--namespace` | `LEANCD_NAMESPACE` | default | leancd's namespace |
+| `--namespace` | `LEANCD_NAMESPACE` | default | Lean CD's namespace |
 
 For the complete flag and environment-variable reference, authentication modes,
 metrics, tuning, and troubleshooting, see
@@ -85,7 +85,7 @@ metrics, tuning, and troubleshooting, see
 
 ## Deploy
 
-leancd ships as a Helm chart, published to GHCR as an OCI artifact. Install it
+Lean CD ships as a Helm chart, published to GHCR as an OCI artifact. Install it
 directly — OCI needs no `helm repo add`:
 
 ```sh
@@ -103,15 +103,15 @@ kubectl -n leancd wait --for=condition=Available deploy/leancd --timeout=240s
 ```
 
 The chart installs the Namespace, ServiceAccount, RBAC, and Deployment, and
-points leancd at your OpenTelemetry Collector over OTLP/HTTP (leancd runs no
+points Lean CD at your OpenTelemetry Collector over OTLP/HTTP (Lean CD runs no
 HTTP listener of its own). The default image resolves to `Chart.appVersion`, so
 no `image.*` override is needed for the published build. Override `config.*`
 values for your repository.
 
 For a tighter production posture, install with `--set rbac.namespaced=true` to
-bind leancd's permissions to selected namespaces (RoleBindings) and ship a
+bind Lean CD's permissions to selected namespaces (RoleBindings) and ship a
 default-deny `NetworkPolicy`. The Grafana dashboard ships as a
-`grafana_dashboard`-labelled ConfigMap (`--set dashboards.enabled=true`, on by
+`grafana_dashboard`-labeled ConfigMap (`--set dashboards.enabled=true`, on by
 default).
 
 To install from a local checkout (e.g. development), point `helm` at the chart
@@ -119,13 +119,13 @@ directory: `helm install leancd charts/leancd ...`. See
 [doc/release.md](doc/release.md) for the release process and
 [charts/leancd/README.md](charts/leancd/README.md) for the full values reference.
 
-For a hands-on walkthrough deploying leancd into a local `kind` cluster
+For a hands-on walkthrough deploying Lean CD into a local `kind` cluster
 (including an optional in-cluster Forgejo Git server), see
 [doc/tutorial.md](doc/tutorial.md).
 
 ## How it keeps memory low
 
-leancd never builds an informer/cache of the cluster: every reconciliation
+Lean CD never builds an informer/cache of the cluster: every reconciliation
 issues direct `List`/`Get`/`Patch` calls for exactly the resources declared in
 Git. Git history is kept shallow (depth 1), YAML is parsed one document at a
 time, runtime state is a single ConfigMap plus a managed-by label, and the
@@ -152,13 +152,13 @@ run. See [bench/README.md](bench/README.md).
 ## End-to-end tests
 
 ```sh
-make e2e        # kind cluster + in-cluster Forgejo + leancd
+make e2e        # kind cluster + in-cluster Forgejo + Lean CD
 ```
 
 The e2e suite spins up an ephemeral `kind` cluster and runs **Forgejo and
-leancd as in-cluster Pods** (leancd is built into a container image via the
+Lean CD as in-cluster Pods** (Lean CD is built into a container image via the
 root [`Dockerfile`](Dockerfile) and loaded into the kind node). It drives
-leancd's intended behaviour end-to-end across ~40 scenarios: initial apply, Git
+Lean CD's intended behavior end-to-end across ~40 scenarios: initial apply, Git
 change detection + steady-state drift-check, drift self-heal, prune, state
 ConfigMap, the `sync`/`status` CLI, OTLP metrics, cluster- and
 namespaced-scope resources, CRDs, the controller polling loop, HTTPS basic-auth
@@ -175,7 +175,7 @@ enters the flake devShell and runs `make e2e` on every push and pull request. A
 failing scenario exits non-zero so a regression fails the run. See
 [`tests/e2e.rs`](tests/e2e.rs) and [`tests/common/`](tests/common/).
 
-Concurrency and field-conflict behaviour — `controller` (long-lived) and `sync`
+Concurrency and field-conflict behavior — `controller` (long-lived) and `sync`
 (manual, possibly in another Pod) may run at once, and server-side apply under a
 single field manager keeps that safe and idempotent — are covered by unit tests
 and are deliberately out of e2e scope: scenarios drive `sync` serially and run a
@@ -187,7 +187,7 @@ single controller at a time.
 - [doc/tutorial.md](doc/tutorial.md) — hands-on kind cluster walkthrough
 - [doc/architecture.md](doc/architecture.md) — how the implementation works
 - [doc/migration-from-argocd.md](doc/migration-from-argocd.md) — phased guide to
-  migrating an Argo CD-managed cluster to leancd
+  migrating an Argo CD-managed cluster to Lean CD
 
 ## License
 

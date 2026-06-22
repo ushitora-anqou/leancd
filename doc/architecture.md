@@ -1,4 +1,4 @@
-# leancd Architecture
+# Lean CD Architecture
 
 This document describes **how the current implementation works** and, where it
 matters, *why* it works that way.
@@ -25,7 +25,7 @@ feature reference (every flag, env var, metric) see
 
 ## 1. Overview
 
-leancd is a single static binary with four subcommands. The `controller` and
+Lean CD is a single static binary with four subcommands. The `controller` and
 `sync` subcommands share one reconciliation engine; `status` and `health` are
 read-only. One running process syncs exactly one Git repository (one branch,
 one path) into the cluster it runs in.
@@ -49,7 +49,7 @@ one path) into the cluster it runs in.
 ```
 
 The overriding invariant is that process RSS stays **strictly small** at all times
-(idle and at sync peak). That budget is the project's headline goal — favoured
+(idle and at sync peak). That budget is the project's headline goal — favored
 over feature breadth, real-time responsiveness, and implementation convenience
 — so every mechanism below exists to preserve it: no cluster-wide cache, no
 background state, shallow clones, streaming parses, and a single-threaded runtime.
@@ -72,7 +72,7 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | `reconcile.rs` | The `Reconciler` engine shared by `controller` and `sync` |
 | `lock.rs` | Reconcile-pass mutual exclusion via a `coordination.k8s.io/v1` Lease (one pass at a time, cluster-wide); stale-lease reclaim |
 | `drift.rs` | Per-GVK `List` + subset comparison for drift detection |
-| `prune.rs` | Two-signal deletion of resources removed from Git; honours `resource-policy: keep` and Helm hooks |
+| `prune.rs` | Two-signal deletion of resources removed from Git; honors `resource-policy: keep` and Helm hooks |
 | `state.rs` | Single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
 | `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics; exposes `leancd_rss_bytes`. No HTTP listener. |
 | `error.rs` | `thiserror` `Error` enum (`Git`, `Manifest`, `Kube`, `Config`, `Hook`, `Io`, `Other`) and `Result` alias |
@@ -83,9 +83,9 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 `cli.rs` defines four subcommands. `controller` and `sync` are dispatched to
 **the same `Reconciler`** — `controller` is just `sync` called repeatedly.
 
-| Subcommand | Behaviour | Entry |
+| Subcommand | Behavior | Entry |
 |---|---|---|
-| `controller` | Long-lived: initialises the OTel meter provider, then runs `run_loop()` until shutdown | `run_controller` |
+| `controller` | Long-lived: initializes the OTel meter provider, then runs `run_loop()` until shutdown | `run_controller` |
 | `sync` | One reconciliation pass (`run_once()`), then exits | `run_sync` |
 | `status` | Reads the state ConfigMap and prints it, then exits (no reconciliation) | `run_status` |
 | `health` | Reads the state ConfigMap, classifies freshness/staleness/failure for `exec` probes, then exits (no reconciliation) | `health::run_health` |
@@ -95,9 +95,9 @@ identical in both paths.
 
 `main.rs` runs under `#[tokio::main(flavor = "current_thread")]` — a
 single-threaded async runtime — to avoid per-thread stack memory.
-`tracing_subscriber` is initialised from
+`tracing_subscriber` is initialized from
 `RUST_LOG` (default `info`). In `controller`, the reconciliation loop is spawned
-as one task and the OTel meter provider is initialised; on `SIGINT` or `SIGTERM`
+as one task and the OTel meter provider is initialized; on `SIGINT` or `SIGTERM`
 (`shutdown_signal`) a cooperative `stop` flag is set, the in-flight pass is
 allowed to finish (the loop checks the flag between passes and short-circuits
 its inter-pass sleep), and the meter provider is `shutdown()` to flush a final
@@ -170,12 +170,12 @@ between passes and logging (never aborting on) per-pass errors.
 
 ## 5. Git and the git CLI
 
-leancd shells out to `git` (`tokio::process::Command`) rather than embedding a
+Lean CD shells out to `git` (`tokio::process::Command`) rather than embedding a
 Git library. The `git` CLI gives reliable repeated shallow fetches and resets
 through a simple, battle-tested API; an embedded library such as `gix` would
 re-implement that machinery and expose its low-level repeated-fetch surface for
-no gain. (The benchmark samples both leancd's own RSS and the whole process
-tree — leancd plus its git/ssh subprocesses — so git's footprint is accounted
+no gain. (The benchmark samples both Lean CD's own RSS and the whole process
+tree — Lean CD plus its git/ssh subprocesses — so git's footprint is accounted
 for either way.)
 
 `git_sync::sync` keeps a depth-1 shallow checkout:
@@ -225,7 +225,7 @@ fatal). A document with `kind: List` is **recursively expanded** into its
 `RawManifest` holds the identity extracted from the document
 (`group`/`version` from `apiVersion`, `kind`, `metadata.name`,
 `metadata.namespace`) plus the whole document as an untyped `serde_json::Value`
-(`data`). This lets leancd apply any resource kind — including CRDs and
+(`data`). This lets Lean CD apply any resource kind — including CRDs and
 cluster-scoped resources — through `DynamicObject` without typed structs.
 
 Before apply, `inject_managed_label` writes the configured label
@@ -266,7 +266,7 @@ and counted, but do not abort the pass.
 Drift detection runs only on **steady-state passes** (prior state
 present, HEAD unchanged) — every other pass is a full apply. This is done with
 periodic `List` calls, never `Watch`: a `Watch` keeps a long-lived connection
-and a streaming cache, and leancd only ever compares the resources Git directly
+and a streaming cache, and Lean CD only ever compares the resources Git directly
 points at, so one `List` per managed GVK is enough and costs no resident memory
 between passes.
 
@@ -274,7 +274,7 @@ between passes.
 
 1. Collects the distinct GVKs in the manifest set.
 2. For each GVK, resolves it and issues one `List` filtered by the managed-by
-   label selector (`<key>=<value>`), so only leancd-managed resources are
+   label selector (`<key>=<value>`), so only Lean CD-managed resources are
    compared.
 3. For each manifest, finds its live match by `(name, namespace)`:
    - No match ⇒ drift, reason `"missing in cluster"`.
@@ -294,7 +294,7 @@ pass).
 
 ## 9. Pruning — two signals
 
-`prune::prune` deletes resources that leancd previously applied but that Git no
+`prune::prune` deletes resources that Lean CD previously applied but that Git no
 longer declares. The deletion set combines two signals:
 
 1. **Primary** (`deletion_targets`): the persisted applied set (`prev`) minus
@@ -305,7 +305,7 @@ longer declares. The deletion set combines two signals:
    key was dropped from state.
 
 GVKs never applied before are out of scope (state-light): a fully-empty `prev`
-skips the safety net entirely — a deliberate trade-off favouring low RSS over
+skips the safety net entirely — a deliberate trade-off favoring low RSS over
 exhaustive API discovery.
 
 Each candidate is resolved (discovery cached per GVK) and deleted with
@@ -326,8 +326,8 @@ persistent and in-process footprint minimal. The ConfigMap is named
 
 `state::write` upserts the ConfigMap via SSA (under `field_manager`) and
 deliberately does NOT stamp the managed-by label on it — the prune safety-net
-lists live resources by that label, so an unlabelled state ConfigMap is
-invisible to prune and leancd will not delete its own state every pass (BUG 2);
+lists live resources by that label, so an unlabeled state ConfigMap is
+invisible to prune and Lean CD will not delete its own state every pass (BUG 2);
 `state::read` returns `None` on a 404 (first run).
 The `State` struct is serialized to JSON and stored under a single ConfigMap
 data key, `state`:
@@ -347,11 +347,11 @@ single bad value cannot wedge reconciliation. `status` renders this ConfigMap.
 
 ## 11. Metrics
 
-leancd exposes no HTTP endpoint. It instruments metrics with the OpenTelemetry
+Lean CD exposes no HTTP endpoint. It instruments metrics with the OpenTelemetry
 SDK and pushes them over OTLP/HTTP (protobuf, port 4318) to a collector at fixed
 intervals (`PeriodicReader`, default 60s; `OTEL_METRIC_EXPORT_INTERVAL`). The
 endpoint, protocol, headers, and timeout come from the standard
-`OTEL_EXPORTER_OTLP_*` environment variables — leancd itself takes no metrics
+`OTEL_EXPORTER_OTLP_*` environment variables — Lean CD itself takes no metrics
 flag. The meter provider is flushed (`shutdown()`) on controller exit.
 
 Counters are incremented directly; the gauges are observable gauges backed by a
@@ -388,7 +388,7 @@ footprint at collection time.
   pass is never reclaimed as stale. This serialization is what makes the state
   ConfigMap safe without CAS: with passes serialized, the SSA `state::write`
   (under one `field_manager`) cannot lose updates. The PID-scoped `work_dir`
-  (`Config::effective_work_dir`) is a second layer of defence: even if the lease
+  (`Config::effective_work_dir`) is a second layer of defense: even if the lease
   were briefly lost, two processes in the same Pod never touch the same git
   checkout.
 - **Error handling.** `reconcile` returns `Err` only for git/state/discovery-
@@ -405,24 +405,24 @@ footprint at collection time.
 
 ## 13. Deployment shape
 
-leancd runs as a Kubernetes `Deployment` (one replica, `strategy: Recreate`).
+Lean CD runs as a Kubernetes `Deployment` (one replica, `strategy: Recreate`).
 The shipped Helm chart ([`../charts/leancd/`](../charts/leancd/)) renders:
 
 - a `Namespace`, `ServiceAccount`, a broad `ClusterRole`/`ClusterRoleBinding`
-  (leancd applies arbitrary kinds including CRDs and cluster-scoped resources,
+  (Lean CD applies arbitrary kinds including CRDs and cluster-scoped resources,
   so the default is broad — narrow it in production with `rbac.namespaced=true`),
   and
 - the `Deployment` (image `leancd:latest`, `imagePullPolicy: IfNotPresent`,
   `args: ["controller"]`, `LEANCD_*` env, credentials via `envFrom` a Secret
   marked `optional`, resources request 32Mi/50m and limit 128Mi/200m).
 
-leancd runs no HTTP listener: it pushes metrics over OTLP/HTTP, so the manifest
+Lean CD runs no HTTP listener: it pushes metrics over OTLP/HTTP, so the manifest
 declares no `Service` or exposed port — point it at your own collector via
 `OTEL_EXPORTER_OTLP_ENDPOINT`.
 
 The runtime image is `debian:bookworm-slim` plus `git`, `ca-certificates`, and
 `openssh-client` (the latter two for HTTPS and SSH transports; `git` because
-leancd shells out to it). The multi-stage [`../Dockerfile`](../Dockerfile)
+Lean CD shells out to it). The multi-stage [`../Dockerfile`](../Dockerfile)
 builds a release binary and copies it into the slim runtime.
 
 See [`./tutorial.md`](./tutorial.md) for a worked deployment into a `kind`

@@ -1,6 +1,6 @@
 # Release process
 
-How to cut a leancd release. A single `vX.Y.Z` tag publishes the container
+How to cut a Lean CD release. A single `vX.Y.Z` tag publishes the container
 image, the Helm chart, and a GitHub Release — all at the same version — via
 [`.github/workflows/release.yml`](../.github/workflows/release.yml). The steps
 below are the manual parts around it.

@@ -1,6 +1,6 @@
-# leancd User Manual
+# Lean CD User Manual
 
-This is the complete reference for leancd: every subcommand, flag, environment
+This is the complete reference for Lean CD: every subcommand, flag, environment
 variable, Git-authentication mode, metric, and operational concern.
 
 > This manual is the detailed companion to [`../README.md`](../README.md). It
@@ -10,19 +10,19 @@ variable, Git-authentication mode, metric, and operational concern.
 
 ## 1. Introduction
 
-leancd is a minimal, low-memory continuous-delivery controller for Kubernetes.
+Lean CD is a minimal, low-memory continuous-delivery controller for Kubernetes.
 It syncs plain YAML manifests from a Git repository into the cluster it runs
 in, detects drift, and self-heals — with a hard process-RSS budget it keeps
 minimal.
 
 One running process syncs exactly one Git repository (one branch, one set of
-paths). To manage multiple repositories, run multiple leancd processes
+paths). To manage multiple repositories, run multiple Lean CD processes
 (Deployments).
 
 Reading order if you are new:
 
 1. [`../README.md`](../README.md) — overview and quick start.
-2. [`./tutorial.md`](./tutorial.md) — deploy leancd into a `kind` cluster.
+2. [`./tutorial.md`](./tutorial.md) — deploy Lean CD into a `kind` cluster.
 3. This manual — full reference.
 4. [`./architecture.md`](./architecture.md) — internals and the reasoning behind each mechanism.
 
@@ -30,7 +30,7 @@ Reading order if you are new:
 
 ### Git-to-cluster sync
 
-leancd keeps a depth-1 shallow checkout of `<repo-url>` at `<branch>` under
+Lean CD keeps a depth-1 shallow checkout of `<repo-url>` at `<branch>` under
 `<work-dir>`, expands each `--path` glob pattern into the directories it
 matches, parses every `*.yaml`/`*.yml` under them (recursively), and
 server-side-applies each manifest into the cluster. One process = one repo +
@@ -41,18 +41,18 @@ one set of paths.
 Every applied manifest gets a label injected (default
 `app.kubernetes.io/managed-by=leancd`, configurable via `--managed-label-key`/
 `--managed-label-value`). This label is used by drift detection and pruning to
-find the resources leancd owns, so it must be stable for the lifetime of a
+find the resources Lean CD owns, so it must be stable for the lifetime of a
 deployment. The state ConfigMap deliberately carries **no** managed-by label —
-the prune safety-net lists live resources by that label, so an unlabelled state
-ConfigMap is invisible to pruning and leancd never deletes its own state.
+the prune safety-net lists live resources by that label, so an unlabeled state
+ConfigMap is invisible to pruning and Lean CD never deletes its own state.
 
 ### The state ConfigMap
 
-leancd persists its progress in a single ConfigMap named `<state-configmap>`
+Lean CD persists its progress in a single ConfigMap named `<state-configmap>`
 (default `leancd-state`) in `<namespace>`. It records the last applied commit
 SHA, sync/drift/managed counts, and the set of resource keys applied last. This
-is the source of truth for "what has leancd done"; Git is the source of truth
-for "what should exist". If the ConfigMap is lost, leancd treats the next pass
+is the source of truth for "what has Lean CD done"; Git is the source of truth
+for "what should exist". If the ConfigMap is lost, Lean CD treats the next pass
 as a first run and re-applies everything (safe, just less efficient).
 
 ### Reconciliation pass
@@ -60,7 +60,7 @@ as a first run and re-applies everything (safe, just less efficient).
 Each pass: fetch Git → parse manifests → either **full-apply** or
 **drift-check** → prune → write state.
 
-leancd fully re-applies every manifest on the first run or when the Git HEAD
+Lean CD fully re-applies every manifest on the first run or when the Git HEAD
 moved. In **steady state** (prior state present, HEAD unchanged) it instead
 does a cheap drift check and only re-applies if drift is found. This keeps
 steady-state API traffic minimal.
@@ -69,14 +69,14 @@ steady-state API traffic minimal.
 
 All applies use Kubernetes server-side apply under a field manager (default
 `leancd`, configurable via `--field-manager`). SSA is idempotent and lets
-leancd coexist with other managers; applies always run with `.force()`, so SSA
+Lean CD coexist with other managers; applies always run with `.force()`, so SSA
 claims ownership of conflicting fields.
 
 ### Helm hooks
 
-leancd honours Helm hook annotations in **pre-rendered** manifests (i.e. YAML
-already produced by `helm template` or equivalent — leancd does not render
-charts). The semantics match Argo CD. Note that leancd does **not** read
+Lean CD honors Helm hook annotations in **pre-rendered** manifests (i.e. YAML
+already produced by `helm template` or equivalent — Lean CD does not render
+charts). The semantics match Argo CD. Note that Lean CD does **not** read
 `argocd.argoproj.io/hook` or `argocd.argoproj.io/sync-wave`; when migrating from
 Argo CD, convert those to the `helm.sh/hook` equivalents (see
 [`./migration-from-argocd.md`](./migration-from-argocd.md) §8). The mapping is:
@@ -85,19 +85,19 @@ Argo CD, convert those to the `helm.sh/hook` equivalents (see
   `post-install` / `post-upgrade` run **after** it (install and upgrade are
   indistinguishable in a single reconcile, so they collapse).
 - `helm.sh/hook: pre-delete` / `post-delete` run on a **full teardown** — when
-  every main resource has left Git while leancd still has an applied set. The
+  every main resource has left Git while Lean CD still has an applied set. The
   order is pre-delete → prune all → post-delete.
 - `helm.sh/hook-weight` orders hooks within a phase (ascending; ties by name;
   default `0`).
 - `helm.sh/hook-delete-policy` controls hook deletion (`before-hook-creation`
   [default], `hook-succeeded`, `hook-failed`); multiple comma-separated values
-  are honoured.
+  are honored.
 - `helm.sh/resource-policy: keep` exempts a resource from pruning entirely.
 
 Job (`batch/Job`) and Pod hooks are **awaited to completion** within
 `--hook-timeout-secs` (default 300s): a hook reaching `Complete`/`Succeeded` is
 treated as success, `Failed` as failure, and a timeout as failure. Other kinds
-are considered complete — and successful — on apply: leancd never observes
+are considered complete — and successful — on apply: Lean CD never observes
 failure for them, so `hook-failed` never fires, while `hook-succeeded` always
 does (and `before-hook-creation`, the default, applies to every kind). A failed
 PreSync (or pre-delete) hook aborts
@@ -134,7 +134,7 @@ docker build -t leancd:latest .
 ```
 
 The runtime image is `debian:bookworm-slim` with `git`, `ca-certificates`, and
-`openssh-client` installed (`git` because leancd shells out to it; the latter
+`openssh-client` installed (`git` because Lean CD shells out to it; the latter
 two for HTTPS and SSH transports). The entrypoint is `leancd`.
 
 ### Runtime requirements
@@ -146,13 +146,13 @@ two for HTTPS and SSH transports). The entrypoint is `leancd`.
 
 ## 4. Subcommands
 
-leancd has four subcommands. All flags in [§5](#5-configuration-reference) are
+Lean CD has four subcommands. All flags in [§5](#5-configuration-reference) are
 accepted by every subcommand (they share `CommonArgs`); flags that only matter
 for `controller` are noted there.
 
 ### `leancd controller`
 
-Runs as a long-lived controller: initialises the OTel meter provider, then
+Runs as a long-lived controller: initializes the OTel meter provider, then
 reconciles on `<poll-interval>` forever. **Deploy this** as a `Deployment`.
 
 ```sh
@@ -166,7 +166,7 @@ task is force-aborted as a fallback so Pod termination is not blocked. A
 failing pass is retried after an exponential backoff (`--backoff-base`/
 `--backoff-max`), reset to `--poll-interval` on success; the backoff delay is
 jittered to `[0.75x, 1.0x)` so repeated failures across instances do not
-synchronise. `SIGHUP` reloads the log filter from `RUST_LOG` without restarting.
+synchronize. `SIGHUP` reloads the log filter from `RUST_LOG` without restarting.
 
 ### `leancd sync`
 
@@ -177,7 +177,7 @@ pass failed. Use this from CI, cron, or a one-off `kubectl exec`.
 leancd sync                          # one pass
 ```
 
-Applies always run with force-conflict server-side apply, so leancd takes
+Applies always run with force-conflict server-side apply, so Lean CD takes
 ownership of fields currently owned by another field manager — field conflicts
 never block a sync.
 
@@ -236,7 +236,7 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 | `--branch` | `LEANCD_BRANCH` | `main` | all | branch / ref to track |
 | `--path` | `LEANCD_PATH` | `.` | all | glob patterns of manifest directories, scanned recursively; repeatable, comma-separated via env (e.g. `live/*/prod`) |
 | `--poll-interval` | `LEANCD_POLL_INTERVAL` | `60s` | controller | reconciliation interval (see [§5.2](#52-duration-parser)) |
-| `--namespace` | `LEANCD_NAMESPACE` | `default` | all | leancd's namespace (state ConfigMap; default ns for ns-less resources) |
+| `--namespace` | `LEANCD_NAMESPACE` | `default` | all | Lean CD's namespace (state ConfigMap; default ns for ns-less resources) |
 | `--state-configmap` | `LEANCD_STATE_CONFIGMAP` | `leancd-state` | all | state ConfigMap name |
 | `--work-dir` | `LEANCD_WORK_DIR` | `/tmp/leancd-work` | all | local checkout directory |
 | `--git-username-env` | `LEANCD_GIT_USERNAME_ENV` | `GIT_USERNAME` | all | name of the env var holding the HTTPS username (see [§5.3](#53-git-credential-indirection)) |
@@ -259,7 +259,7 @@ meaningful way — `sync`/`status` run one pass and do not poll.
 
 ### 5.2 Duration parser
 
-`--poll-interval` (and `LEANCD_POLL_INTERVAL`) use leancd's own parser, which
+`--poll-interval` (and `LEANCD_POLL_INTERVAL`) use Lean CD's own parser, which
 accepts an integer followed by one of these unit suffixes:
 
 | Suffix | Meaning |
@@ -277,7 +277,7 @@ This is the most commonly misunderstood part of the configuration. **There is
 no `LEANCD_GIT_USERNAME`, `LEANCD_GIT_PASSWORD`, or `LEANCD_GIT_SSH_KEY`
 variable.** Instead:
 
-- `--git-username-env` names the environment variable that leancd reads the
+- `--git-username-env` names the environment variable that Lean CD reads the
   HTTPS username **from** (default: it reads `GIT_USERNAME`).
 - `--git-password-env` names the variable read for the HTTPS password/token
   (default: `GIT_PASSWORD`).
@@ -286,7 +286,7 @@ variable.** Instead:
 
 So the default flow is: put `GIT_USERNAME`/`GIT_PASSWORD` (or `GIT_SSH_KEY`)
 into the environment — typically via a Kubernetes Secret mounted with
-`envFrom` — and leancd picks them up. If your Secret uses different key names,
+`envFrom` — and Lean CD picks them up. If your Secret uses different key names,
 point these flags at them. The variables that hold the `--git-*-env` defaults
 themselves (`LEANCD_GIT_USERNAME_ENV`, etc.) just let you rename the credential
 variable; they do not hold credentials.
@@ -300,14 +300,14 @@ leancd controller \
   --git-password-env GH_TOKEN
 ```
 
-This tells leancd to read the HTTPS user from `GH_USER` and the token from
+This tells Lean CD to read the HTTPS user from `GH_USER` and the token from
 `GH_TOKEN`.
 
 ## 6. Git authentication
 
 ### 6.1 URL transport detection
 
-leancd infers the transport from the repository URL:
+Lean CD infers the transport from the repository URL:
 
 | URL prefix | Transport |
 |---|---|
@@ -319,7 +319,7 @@ leancd infers the transport from the repository URL:
 ### 6.2 HTTPS basic auth
 
 For HTTPS URLs, if both the username and password variables are present and
-non-empty, leancd percent-encodes them and embeds them in the URL
+non-empty, Lean CD percent-encodes them and embeds them in the URL
 (`https://user:pass@host/...`) before invoking `git`. The authed URL is never
 logged. If only one is set, or both are empty, the URL is passed through
 unchanged (use this for public HTTPS repos).
@@ -334,7 +334,7 @@ kubectl -n leancd create secret generic leancd-git-credentials \
 
 ### 6.3 SSH key
 
-For SSH URLs (`git@...` or `ssh://`), leancd reads a PEM private key from the
+For SSH URLs (`git@...` or `ssh://`), Lean CD reads a PEM private key from the
 configured variable (default `GIT_SSH_KEY`). It materialises the key to a
 per-process file (`<work-dir parent>/.leancd_ssh_key_<pid>`, mode `0600`, with a
 trailing newline so OpenSSH parses the PEM) and points `git` at it via
@@ -345,7 +345,7 @@ ssh -i <key> -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=<pid file
 ```
 
 The known-hosts store is a separate per-process file
-(`.leancd_known_hosts_<pid>`), so leancd never touches your `~/.ssh/known_hosts`.
+(`.leancd_known_hosts_<pid>`), so Lean CD never touches your `~/.ssh/known_hosts`.
 New host keys are accepted on first contact (`accept-new`). Both files are
 deleted when the sync finishes.
 
@@ -363,14 +363,14 @@ For a public repo, omit the Secret entirely. The shipped Deployment mounts
 
 A `file://`, absolute, or relative path is passed straight to `git` with no
 authentication. This is useful for testing and air-gapped clusters — but the
-path must be reachable from wherever leancd runs. A path on your host is **not**
-visible inside a Pod, so `file://` is mainly for running leancd as a host
+path must be reachable from wherever Lean CD runs. A path on your host is **not**
+visible inside a Pod, so `file://` is mainly for running Lean CD as a host
 process (as the RSS benchmark does); for in-cluster use, prefer an HTTPS/SSH
 repo.
 
 ## 7. Metrics reference
 
-leancd exposes no HTTP endpoint. It instruments metrics with the OpenTelemetry
+Lean CD exposes no HTTP endpoint. It instruments metrics with the OpenTelemetry
 SDK and pushes them over **OTLP/HTTP** (protobuf, port 4318) to a collector at
 fixed intervals (`PeriodicReader`, default 60s). Configuration is via the
 standard `OTEL_EXPORTER_OTLP_*` environment variables — there is no metrics
@@ -386,7 +386,7 @@ text-format output).
 | `leancd_hooks_total` | counter | `phase`, `result` | Helm hooks executed (`phase` ∈ presync/postsync/predelete/postdelete; `result` ∈ succeeded/failed) |
 | `leancd_sync_last_success_timestamp_seconds` | observable gauge | — | Unix timestamp of the last successful sync |
 | `leancd_drift_detected` | observable gauge | `group`, `version`, `kind` | Drifted resources, broken down by GVK (reset each pass) |
-| `leancd_managed_resources` | observable gauge | — | Number of resources managed by leancd |
+| `leancd_managed_resources` | observable gauge | — | Number of resources managed by Lean CD |
 | `leancd_rss_bytes` | observable gauge | — | Process resident set size in bytes (read at each collection) |
 
 `leancd_rss_bytes` is the headline metric: it must stay under the RSS budget
@@ -413,11 +413,11 @@ sum by (kind) (leancd_drift_detected)
 
 ### 7.1 Getting metrics into Prometheus
 
-leancd only pushes OTLP/HTTP and exposes no scrape endpoint. There are two ways
-to land the metrics in Prometheus — pick one, no leancd change is needed.
+Lean CD only pushes OTLP/HTTP and exposes no scrape endpoint. There are two ways
+to land the metrics in Prometheus — pick one, no Lean CD change is needed.
 
 **A. OTel Collector → Prometheus exporter (works with any Prometheus).** Run a
-collector whose OTLP/HTTP receiver accepts leancd's push and whose Prometheus
+collector whose OTLP/HTTP receiver accepts Lean CD's push and whose Prometheus
 exporter exposes `/metrics` for Prometheus to scrape:
 
 ```yaml
@@ -445,7 +445,7 @@ or a static `scrape_config`. This is the path the e2e suite uses
 
 **B. Prometheus ≥ 3.0 native OTLP receiver (no collector).** Prometheus 3.x can
 ingest OTLP directly. Enable it with a startup flag and an `otlp:` block, then
-point leancd at the Prometheus OTLP endpoint:
+point Lean CD at the Prometheus OTLP endpoint:
 
 ```yaml
 # prometheus.yml (Prometheus ≥ 3.0) — root-level block, not under scrape_configs
@@ -458,7 +458,7 @@ otlp:
 prometheus --web.enable-otlp-receiver --config.file=prometheus.yml
 ```
 
-The receiver listens on `/api/v1/otlp/v1/metrics`; set leancd's endpoint to the
+The receiver listens on `/api/v1/otlp/v1/metrics`; set Lean CD's endpoint to the
 `/api/v1/otlp` prefix so the SDK appends the standard `/v1/metrics` path:
 
 ```sh
@@ -472,17 +472,17 @@ for the full `otlp:` block and resource-attribute promotion.
 
 ### 7.2 Grafana dashboard
 
-A ready-made Grafana dashboard for leancd ships in the chart at
+A ready-made Grafana dashboard for Lean CD ships in the chart at
 [`charts/leancd/dashboards/leancd-overview.json`](../charts/leancd/dashboards/leancd-overview.json).
 With `dashboards.enabled=true` (the default) the chart renders it as a ConfigMap
-labelled `grafana_dashboard: "1"`, which a Grafana running the kiwigrid dashboard
+labeled `grafana_dashboard: "1"`, which a Grafana running the kiwigrid dashboard
 sidecar (e.g. the VictoriaMetrics or `grafana` helm charts with sidecar dashboards
 enabled) imports automatically. To import it manually instead, use
 **Dashboards → New → Import → Upload JSON file**, pick your Prometheus data source
 for the `DS_PROMETHEUS` variable, and the panels below appear. The data source is
 a variable, so the same dashboard binds to whatever Prometheus you point it at.
 
-It covers all of leancd's metrics in one view:
+It covers all of Lean CD's metrics in one view:
 
 | Panel | Metric(s) | What it shows |
 |---|---|---|
@@ -495,7 +495,7 @@ It covers all of leancd's metrics in one view:
 | Drifted resources by kind | `leancd_drift_detected` | `sum by (kind) (...)` |
 | Helm hooks run in last hour | `leancd_hooks_total` | `sum by (phase, result) (increase(...[1h]))` |
 
-**Metric-name note.** The dashboard queries use the metric names leancd emits
+**Metric-name note.** The dashboard queries use the metric names Lean CD emits
 (`leancd_sync_total`, `leancd_rss_bytes`, …) directly. With the standard OTel
 Collector Prometheus exporter path (§7.1 A) those names appear unchanged. If
 your collector uses a non-default `translation_strategy` the suffixes may differ
@@ -504,7 +504,7 @@ your collector uses a non-default `translation_strategy` the suffixes may differ
 `resource_to_telemetry_conversion` is enabled (as in the §7.1 example) the
 `service.name=leancd` resource attribute becomes a `service_name` label, so in a
 multi-service Prometheus add `{service_name="leancd"}` to each query to isolate
-leancd's series.
+Lean CD's series.
 
 ## 8. Tuning
 
@@ -517,12 +517,12 @@ validates; if you change it significantly at scale, re-run `make bench`.
 
 ### 8.2 Namespace and multi-tenancy
 
-`--namespace` sets leancd's **own** namespace — where the state ConfigMap lives
-and the default namespace for manifests that omit one. leancd applies manifests
+`--namespace` sets Lean CD's **own** namespace — where the state ConfigMap lives
+and the default namespace for manifests that omit one. Lean CD applies manifests
 into whatever namespaces those manifests declare, so it can manage resources
 across namespaces (and cluster-scoped resources) from one deployment.
 
-One leancd process manages one repository. To manage several repositories, run
+One Lean CD process manages one repository. To manage several repositories, run
 several Deployments — each with its own `--repo-url`, `--namespace`,
 `--state-configmap`, and (if they share a cluster) distinct
 `--managed-label-value`/`--field-manager` so their resources don't collide.
@@ -530,7 +530,7 @@ several Deployments — each with its own `--repo-url`, `--namespace`,
 ### 8.3 Managed-by label customization
 
 Change `--managed-label-key`/`--managed-label-value` when running multiple
-leancd instances in one cluster that must not touch each other's resources.
+Lean CD instances in one cluster that must not touch each other's resources.
 Drift detection and pruning both filter by this label, so two instances with
 different label values are isolated. Renaming the label on an existing
 deployment orphans its previously-applied resources (they keep the old label).
@@ -538,7 +538,7 @@ deployment orphans its previously-applied resources (they keep the old label).
 ### 8.4 Field manager
 
 `--field-manager` (default `leancd`) is the SSA field-manager identity. SSA
-tracks field ownership by manager name; renaming it means leancd loses
+tracks field ownership by manager name; renaming it means Lean CD loses
 ownership of fields it applied under the old name (a subsequent sync
 re-claims them). Keep it stable across the lifetime of a deployment.
 
@@ -546,7 +546,7 @@ re-claims them). Keep it stable across the lifetime of a deployment.
 
 The shipped Deployment requests 32Mi/50m and limits 128Mi/200m. The RSS
 budget is for the **process**; the 128Mi limit leaves headroom. If you tighten
-the limit too close to the process budget you risk OOM-killing leancd during a
+the limit too close to the process budget you risk OOM-killing Lean CD during a
 sync peak; if you raise it you lose the safety net the budget provides. See [`../bench/`](../bench/)
 to verify on your hardware and manifest scale.
 
@@ -554,7 +554,7 @@ to verify on your hardware and manifest scale.
 
 ### 9.1 Logs
 
-leancd uses `tracing`, controlled by `RUST_LOG` (an `EnvFilter`); the default
+Lean CD uses `tracing`, controlled by `RUST_LOG` (an `EnvFilter`); the default
 level is `info`. Set `RUST_LOG=debug` for verbose output, or target a module:
 
 ```sh
@@ -587,11 +587,11 @@ the same engine as the controller, so the result is identical.
 ### 9.4 RBAC
 
 The shipped `ClusterRole` is intentionally broad — `apiGroups: ["*"]`,
-`resources: ["*"]`, plus non-resource URLs — because leancd applies arbitrary
+`resources: ["*"]`, plus non-resource URLs — because Lean CD applies arbitrary
 manifests including CRDs and cluster-scoped resources. **Narrow it in
-production** to the `apiGroups`/`resources`/namespaces leancd should manage.
+production** to the `apiGroups`/`resources`/namespaces Lean CD should manage.
 Because drift detection and pruning list resources filtered by the managed-by
-label, leancd needs `list` (and `get`) on the kinds it manages, plus
+label, Lean CD needs `list` (and `get`) on the kinds it manages, plus
 `create`/`update`/`patch` (apply) and `delete` (prune).
 
 ### 9.5 Upgrading
@@ -608,7 +608,7 @@ kubectl -n leancd rollout restart deploy/leancd
 
 ### 9.6 Backups / disaster recovery
 
-State lives in a single ConfigMap. Losing it is **safe**: leancd treats the
+State lives in a single ConfigMap. Losing it is **safe**: Lean CD treats the
 next pass as a first run and re-applies everything (a full apply), then prunes
 nothing (the safety-net prune only covers GVKs seen in prior state, so a
 re-created deployment will not delete pre-existing resources until it has
@@ -622,24 +622,24 @@ truth; back up your repository, not the state ConfigMap.
 | Pod `CrashLoopBackOff` | `LEANCD_REPO_URL` unset, or a hard config/git error | `kubectl logs`; check env and that the URL is reachable |
 | `git ... failed: ... could not read Username` | HTTPS credentials missing or empty | Create the Secret with `GIT_USERNAME`/`GIT_PASSWORD`; `GIT_TERMINAL_PROMPT=0` prevents a hang |
 | `git ... failed: ... Permission denied (publickey)` | SSH key missing or wrong | Ensure `GIT_SSH_KEY` holds a valid PEM key and the URL is `git@`/`ssh://` |
-| Drift never detected on an old resource | The resource predates leancd and lacks the managed-by label | Re-apply via `sync`, or label it manually |
+| Drift never detected on an old resource | The resource predates Lean CD and lacks the managed-by label | Re-apply via `sync`, or label it manually |
 | Prune deletes nothing after state loss | Expected: the safety-net prune only covers previously-applied GVKs | Re-apply, then remove from Git; the next pass prunes |
-| First reconcile re-applies everything | Expected: no prior state | None — this is correct first-run behaviour |
+| First reconcile re-applies everything | Expected: no prior state | None — this is correct first-run behavior |
 | `leancd_rss_bytes` absent or 0 | `/proc` unavailable (non-Linux host), or metrics not reaching the collector | Run on Linux; check `OTEL_EXPORTER_OTLP_ENDPOINT` and that the collector is up |
 | `status` says `no sync state recorded yet` | First run hasn't completed, or state ConfigMap was deleted | Wait one pass; or run `leancd sync` |
 
 ## 11. Security considerations
 
 - **RBAC**: the default `ClusterRole` is broad. Narrow it to the resources and
-  namespaces leancd should touch (see [§9.4](#94-rbac)).
+  namespaces Lean CD should touch (see [§9.4](#94-rbac)).
 - **Credentials**: only Git credentials are read from the environment (typically
   a Secret via `envFrom`). They are never accepted as flags and the authed HTTPS
   URL is never logged.
-- **SSH key on disk**: leancd writes the SSH key to a per-process `0600` file
+- **SSH key on disk**: Lean CD writes the SSH key to a per-process `0600` file
   for the duration of a sync and deletes it afterwards. It never lives in
   process memory long-term. The host must protect `/tmp` (or wherever
   `--work-dir`'s parent is).
-- **TLS**: leancd uses `rustls` (no OpenSSL). It talks to the Git server over
+- **TLS**: Lean CD uses `rustls` (no OpenSSL). It talks to the Git server over
   HTTPS using the system CA bundle (`ca-certificates` in the container image).
 
 ## 12. Non-goals
@@ -654,16 +654,16 @@ These are deliberately out of scope (see [`../README.md`](../README.md)):
 
 ## 13. Glossary
 
-- **RSS** — resident set size; the process memory leancd keeps minimal.
+- **RSS** — resident set size; the process memory Lean CD keeps minimal.
 - **SSA** — server-side apply; Kubernetes merges manifests server-side under a
   field manager.
 - **Drift** — the live cluster state diverges from the Git-declared state.
-- **Prune** — delete resources that leancd applied but that Git no longer
+- **Prune** — delete resources that Lean CD applied but that Git no longer
   declares.
 - **GVK** — group/version/kind; the resource type of a manifest.
 - **managed-by label** — `app.kubernetes.io/managed-by=leancd` by default;
-  marks resources leancd owns.
-- **state ConfigMap** — `leancd-state` by default; leancd's persisted progress.
+  marks resources Lean CD owns.
+- **state ConfigMap** — `leancd-state` by default; Lean CD's persisted progress.
 - **field manager** — SSA identity (`leancd` by default) that owns applied
   fields.
 
@@ -674,5 +674,5 @@ These are deliberately out of scope (see [`../README.md`](../README.md)):
 - [`./architecture.md`](./architecture.md) — how the implementation works and
   why it is shaped that way.
 - [`./migration-from-argocd.md`](./migration-from-argocd.md) — migrating an
-  Argo CD-managed cluster to leancd.
+  Argo CD-managed cluster to Lean CD.
 - [`../bench/README.md`](../bench/README.md) — RSS benchmark.

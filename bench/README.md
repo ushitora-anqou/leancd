@@ -1,6 +1,6 @@
-# leancd RSS benchmark
+# Lean CD RSS benchmark
 
-This directory verifies the headline guarantee: leancd keeps its RSS minimal
+This directory verifies the headline guarantee: Lean CD keeps its RSS minimal
 while reconciling a realistic cluster — both at the sync peak
 (fetch/parse/apply) and at idle.
 
@@ -10,12 +10,12 @@ while reconciling a realistic cluster — both at the sync peak
 2. Generates a realistic manifest set (N namespaces ×
    Deployment/StatefulSet/ConfigMap/Service + cluster-scoped resources) into a
    local Git repository.
-3. Builds leancd in **release** mode and runs it as a controller pointed at the
+3. Builds Lean CD in **release** mode and runs it as a controller pointed at the
    kind cluster via kubeconfig.
 4. Samples two footprints in parallel from startup through the settled state,
    capturing the **peak** (max) and **idle** (final) value of each:
-   - **self** — leancd's own RSS, read directly from the process via `ps`.
-   - **tree** — the whole process tree (leancd + git/ssh subprocesses), summed
+   - **self** — Lean CD's own RSS, read directly from the process via `ps`.
+   - **tree** — the whole process tree (Lean CD + git/ssh subprocesses), summed
      via `ps`. Shared pages are double-counted, so this deliberately
      overestimates (a conservative regression gate).
 5. Fails if any of the self/tree peak/idle values >= the budget (default
@@ -63,13 +63,13 @@ budget breach, so wiring them into such a job catches RSS regressions.
 
 ## Measurement note
 
-leancd runs as a host process against the kind cluster's kubeconfig rather than
+Lean CD runs as a host process against the kind cluster's kubeconfig rather than
 in-cluster. This exercises the exact same reconciliation code paths and memory
 profile; the in-cluster Deployment variant lives in `deploy/`.
 
-The **tree** measurement sums RSS across leancd and every descendant process it
+The **tree** measurement sums RSS across Lean CD and every descendant process it
 spawns (the `git` CLI for fetch/clone/reset, plus any `ssh` it shells out to).
 Because RSS double-counts pages shared between processes, the tree total is an
 overestimate — deliberately conservative. This verifies that git's memory is
 accounted for too, even though git runs as a separate process and is excluded
-from leancd's own RSS (read via `ps`).
+from Lean CD's own RSS (read via `ps`).

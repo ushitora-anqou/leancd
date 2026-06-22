@@ -46,15 +46,15 @@ fn api(client: &kube::client::Client, cfg: &Config) -> Api<ConfigMap> {
     Api::namespaced(client.clone(), &cfg.namespace)
 }
 
-/// Build the ConfigMap leancd persists its sync state into.
+/// Build the ConfigMap Lean CD persists its sync state into.
 fn build_state_configmap(cfg: &Config, state: &State) -> ConfigMap {
     ConfigMap {
         metadata: ObjectMeta {
             name: Some(cfg.state_configmap.clone()),
             namespace: Some(cfg.namespace.clone()),
             // Deliberately no managed-by label: the prune safety-net lists live
-            // resources by that label, so an unlabelled state ConfigMap is
-            // invisible to prune and leancd will not delete its own state every
+            // resources by that label, so an unlabeled state ConfigMap is
+            // invisible to prune and Lean CD will not delete its own state every
             // pass.
             ..Default::default()
         },
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn state_configmap_carries_no_managed_label() {
         // The prune safety-net lists live resources by the managed-by label, so
-        // the state ConfigMap must NOT carry it — otherwise leancd prunes its
+        // the state ConfigMap must NOT carry it — otherwise Lean CD prunes its
         // own state every pass.
         let cfg = Config {
             namespace: "default".into(),

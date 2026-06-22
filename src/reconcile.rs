@@ -101,7 +101,7 @@ impl Reconciler {
         let roots = match manifest::expand_roots(work, &self.cfg.path) {
             Ok(r) => r,
             Err(Error::Config(_)) if !prev_applied.is_empty() => {
-                // The sync path matches no directories, but leancd previously
+                // The sync path matches no directories, but Lean CD previously
                 // managed resources: treat an emptied repo/path as a full
                 // teardown rather than the usual "would prune everything"
                 // fail-fast. pre-delete/post-delete hooks (if any remain in Git)
@@ -130,7 +130,7 @@ impl Reconciler {
         let current_keys = prune::ResourceKey::keys_of(&classified.main);
 
         let do_full = should_full_apply(prev.is_some(), sync.changed);
-        // A full teardown: every main resource has left Git while leancd still
+        // A full teardown: every main resource has left Git while Lean CD still
         // has an applied set. pre-delete/post-delete hooks wrap the prune.
         let teardown = classified.main.is_empty() && !prev_applied.is_empty();
 
@@ -364,7 +364,7 @@ impl Reconciler {
                 self.cfg.poll_interval,
             );
             // Jitter the backoff path so repeated failures across instances do
-            // not synchronise; the poll interval after a success is left exact.
+            // not synchronize; the poll interval after a success is left exact.
             let delay = if consecutive_failures > 0 {
                 jittered(delay)
             } else {
@@ -440,7 +440,7 @@ fn next_delay(
 }
 
 /// A pseudo-random factor in `[0.75, 1.0)` used to jitter the backoff delay so
-/// repeated failures across instances do not synchronise. Sampled with `rand`
+/// repeated failures across instances do not synchronize. Sampled with `rand`
 /// (not deterministic in a seed); see the test `jitter_factor_in_range`.
 fn jitter_factor() -> f64 {
     rand::thread_rng().gen_range(0.75..1.0)

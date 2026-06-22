@@ -2,7 +2,7 @@
 //! label value. Each scenario constructs a `TestEnv` so its resources never
 //! collide with another's (cluster-scoped resources included, via the label).
 
-/// The managed-by label key leancd injects (matches cli.rs default).
+/// The managed-by label key Lean CD injects (matches cli.rs default).
 pub const MANAGED_LABEL_KEY: &str = "app.kubernetes.io/managed-by";
 
 pub struct TestEnv {
@@ -27,7 +27,7 @@ impl TestEnv {
         }
     }
 
-    /// Common leancd flags pinning this scenario's repo/branch/state/work dir
+    /// Common Lean CD flags pinning this scenario's repo/branch/state/work dir
     /// and managed-label value. The repo URL is supplied by the caller (it
     /// differs for HTTPS vs SSH transports).
     pub fn sync_args(&self, repo_url: &str) -> Vec<String> {

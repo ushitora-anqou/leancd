@@ -1,7 +1,7 @@
-//! Shared helpers for the leancd end-to-end test suite.
+//! Shared helpers for the Lean CD end-to-end test suite.
 //!
 //! These helpers spin up an ephemeral `kind` cluster with in-cluster Forgejo
-//! and leancd, and provide thin wrappers over `kubectl`/`git`/`curl`. They are
+//! and Lean CD, and provide thin wrappers over `kubectl`/`git`/`curl`. They are
 //! added incrementally alongside the scenarios in `tests/e2e.rs`.
 
 pub mod env;

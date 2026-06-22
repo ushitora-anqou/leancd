@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to leancd are documented here. The format is based on
+All notable changes to Lean CD are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
@@ -10,7 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Backoff on failure**: the controller now backs off exponentially
   (`--backoff-base`/`--backoff-max`) on consecutive sync failures, capped,
-  jittered (`[0.75x, 1.0x)` to avoid synchronisation), and reset to the poll
+  jittered (`[0.75x, 1.0x)` to avoid synchronization), and reset to the poll
   interval on success.
 - **Graceful shutdown**: `--shutdown-timeout-secs` makes the controller finish the
   in-flight reconciliation pass on SIGTERM, falling back to abort after the
@@ -26,7 +26,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   read-only root FS, dropped capabilities, seccomp) with a `/tmp` `emptyDir`,
   plus `livenessProbe`/`readinessProbe` using `leancd health`.
 - **Namespaced RBAC posture**: the chart's `rbac.namespaced=true` mode binds
-  leancd's permissions to the namespace only (RoleBinding) and ships a
+  Lean CD's permissions to the namespace only (RoleBinding) and ships a
   `NetworkPolicy` (egress to kube-API/Git/OTLP/kube-dns, no ingress).
 - **CI/CD**: GitHub Actions CI (`fmt`/`clippy -D`/test/`cargo-deny`/
   `cargo-audit`) and a multi-arch (`amd64`+`arm64`) GHCR release workflow on
@@ -36,12 +36,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed — packaging
 
-- **Helm chart**: leancd now ships as a Helm chart at `charts/leancd/`, replacing
+- **Helm chart**: Lean CD now ships as a Helm chart at `charts/leancd/`, replacing
   the static `deploy/leancd.yaml` and `deploy/leancd-namespaced.yaml` manifests.
   The chart reproduces the cluster-scoped Deployment, RBAC, probes, and
   PSS-restricted securityContext, adds a `rbac.namespaced` toggle (the former
   namespaced mode + NetworkPolicy) and an optional Grafana dashboard ConfigMap
-  (`dashboards.enabled`, on by default, labelled `grafana_dashboard: "1"` for
+  (`dashboards.enabled`, on by default, labeled `grafana_dashboard: "1"` for
   kiwigrid sidecar autodiscovery). Migrate with `helm install leancd charts/leancd`.
 - **CI**: `nix flake check` now also runs `helm lint` and `helm template` structure
   tests across the value variations; `make e2e` gained a
@@ -79,7 +79,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a bug**: the annotation delta vs Argo CD is Argo CD's injected
   `argocd.argoproj.io/tracking-id`, never present in the source manifest. A
   regression test (`apply_round_trip_preserves_metadata_annotations`) pins that
-  `metadata.annotations` and `data` survive leancd's SSA patch-body round-trip.
+  `metadata.annotations` and `data` survive Lean CD's SSA patch-body round-trip.
 
 ### Fixed
 

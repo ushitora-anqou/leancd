@@ -1,19 +1,19 @@
-# leancd vs Argo CD — VictoriaMetrics K8s Stack exploratory sync comparison
+# Lean CD vs Argo CD — VictoriaMetrics K8s Stack exploratory sync comparison
 
 Exploratory harness that stands up **two kind clusters** — one running
-**leancd**, one running **Argo CD** — pointed at the same Forgejo Git repo, then
+**Lean CD**, one running **Argo CD** — pointed at the same Forgejo Git repo, then
 syncs the **VictoriaMetrics K8s Stack** Helm chart (rendered via `helm template`)
 into both and drives identical operations against the repo and the live clusters
-to see whether the two reconcile the same way. Any divergence where leancd's
-final state differs from Argo CD's, or where leancd fails to converge, is
-recorded as a leancd bug in `notes/bugs.md`.
+to see whether the two reconcile the same way. Any divergence where Lean CD's
+final state differs from Argo CD's, or where Lean CD fails to converge, is
+recorded as a Lean CD bug in `notes/bugs.md`.
 
 This is a deliberately **hard** workload for a low-memory CD controller: ~10
 operator CRDs (prepended via `helm show crds`, since `helm template` skips
 `crds/`), the operator pattern (runtime-created child resources that are not in
 Git), Grafana dashboard ConfigMaps that approach the 262144-byte annotation
 limit, and a `helm.sh/hook: pre-delete` cleanup hook that Argo CD ignores but
-leancd runs.
+Lean CD runs.
 
 ## Layout
 - `setup.sh` / `teardown.sh` — bring up / tear down the 2 kind clusters + shared
@@ -32,11 +32,11 @@ leancd runs.
     second workload for hook-weight/delete-policy and CRD variety.
 - `lib/chart.sh` — generic `helm show crds` + `helm template` renderer (CRDs
   first, then the rendered resources) shared by every `charts/*/render.sh`.
-- `manifests/` — leancd Deployment/RBAC/Secret, Argo CD AppProject/Application +
+- `manifests/` — Lean CD Deployment/RBAC/Secret, Argo CD AppProject/Application +
   repository Secret. `__FORGEJO_GIT_URL__` is substituted at deploy time.
 - `lib/common.sh` — shared constants, `kc_lean`/`kc_argo` wrappers, `wait_for`.
 - `lib/git.sh` — host-side git push/clone against Forgejo + `wait_sync` (polls
-  until BOTH controllers see HEAD and leancd's `drift_count==0`).
+  until BOTH controllers see HEAD and Lean CD's `drift_count==0`).
 - `lib/compare.sh` — `normalize` (chart-profile-aware: `NORMALIZE_PROFILE=vm`
   drops operator/checksum annotations, `minimal` does not), `compare_resource`,
   `compare_secret`, `compare_count`.
@@ -45,7 +45,7 @@ leancd runs.
   (SSA), `assert_hook_order`.
 - `run.sh` — runs the 10 VictoriaMetrics scenarios and writes `report.md`.
 - `report.md` — the generated comparison report.
-- `notes/bugs.md` — leancd bugs found during the run.
+- `notes/bugs.md` — Lean CD bugs found during the run.
 
 ## Running
 ```sh
@@ -60,12 +60,12 @@ kind load docker-image leancd:latest --name leancd-compare
 (`run.sh` invokes `vm-stack/render.sh` itself, so the chart is rendered fresh
 each run into the repo workdir before being pushed.)
 
-## Judgement criteria (agreed with the user)
+## Judgment criteria (agreed with the user)
 The **primary** check is **final-state equality** of the synced resources
 between the two clusters (normalized JSON diff). Detection-timing differences
-(leancd polls on an interval; Argo CD watches) are treated as **design
-differences, not bugs**. Where leancd's final state diverges from Argo CD's, or
-where it fails to converge, that is recorded as a leancd bug.
+(Lean CD polls on an interval; Argo CD watches) are treated as **design
+differences, not bugs**. Where Lean CD's final state diverges from Argo CD's, or
+where it fails to converge, that is recorded as a Lean CD bug.
 
 ## Scenarios
 1. Initial full VictoriaMetrics stack deploy (~135 docs, CRD + CR together)
@@ -77,4 +77,4 @@ where it fails to converge, that is recorded as a leancd bug.
 7. Operator recreates a deleted child (neither controller owns it)
 8. Large dashboard ConfigMaps under Server-Side Apply (262144-byte limit)
 9. SSA field-manager conflict on a VMSingle CR (BUG 4 regression guard)
-10. Full teardown + `pre-delete` hook divergence (leancd runs it, Argo CD ignores it)
+10. Full teardown + `pre-delete` hook divergence (Lean CD runs it, Argo CD ignores it)

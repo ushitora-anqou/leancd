@@ -1,4 +1,4 @@
-//! leancd — a minimal, low-memory Kubernetes continuous-delivery controller.
+//! Lean CD — a minimal, low-memory Kubernetes continuous-delivery controller.
 
 mod cli;
 mod config;

@@ -1,4 +1,4 @@
-//! Pruning: delete resources that leancd previously applied but that no
+//! Pruning: delete resources that Lean CD previously applied but that no
 //! longer exist in Git.
 //!
 //! To stay state-light we compare the previously applied set (persisted in the
@@ -59,7 +59,7 @@ impl ResourceKey {
 
 /// Whether a live resource must be excluded from pruning.
 ///
-/// Honours `helm.sh/resource-policy: keep` (never delete, matching Argo CD's
+/// Honors `helm.sh/resource-policy: keep` (never delete, matching Argo CD's
 /// `shouldBeDeleted`) and `helm.sh/hook` (hook resources are managed by the
 /// hook engine, not the prune set-diff). Pure.
 pub fn should_skip_deletion(obj: &DynamicObject) -> bool {
@@ -87,7 +87,7 @@ pub fn deletion_targets<'a>(
     prev.iter().filter(|k| !current_set.contains(*k)).collect()
 }
 
-/// Delete resources that leancd previously applied but that Git no longer
+/// Delete resources that Lean CD previously applied but that Git no longer
 /// declares. The deletion set combines two signals:
 /// 1. The persisted applied set (`prev`) minus the current Git set — the
 ///    primary signal.
@@ -133,7 +133,7 @@ pub async fn prune(
                 continue;
             }
         };
-        // List across ALL namespaces (BUG 5): a resource leancd applied in a
+        // List across ALL namespaces (BUG 5): a resource Lean CD applied in a
         // namespace other than cfg.namespace must still be pruned when it leaves Git.
         let live = match kube_util::list_all(client, &ar, Some(&label_sel)).await {
             Ok(l) => l,
@@ -167,7 +167,7 @@ pub async fn prune(
                 continue;
             }
         };
-        // Honour `helm.sh/resource-policy: keep` and `helm.sh/hook`: inspect the
+        // Honor `helm.sh/resource-policy: keep` and `helm.sh/hook`: inspect the
         // live object before deleting. A missing object (already gone) is a no-op.
         match kube_util::get(
             client,
@@ -328,7 +328,7 @@ mod tests {
         assert!(k.namespace.is_none());
     }
 
-    // --- should_skip_deletion: honour resource-policy:keep and helm hooks ---
+    // --- should_skip_deletion: honor resource-policy:keep and helm hooks ---
 
     fn dyn_with(annos: &[(&str, &str)]) -> DynamicObject {
         let mut meta = json!({"name": "x"});

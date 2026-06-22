@@ -110,7 +110,7 @@ impl SshKeyFile {
         let parent = work.parent().unwrap_or_else(|| Path::new("/tmp"));
         // Best-effort: the parent (e.g. /tmp) almost always exists already.
         let _ = tokio::fs::create_dir_all(parent).await;
-        // PID-scoped names so concurrent leancd processes do not clash.
+        // PID-scoped names so concurrent Lean CD processes do not clash.
         let tag = std::process::id();
         let key_path = parent.join(format!(".leancd_ssh_key_{tag}"));
         let known_hosts = parent.join(format!(".leancd_known_hosts_{tag}"));
@@ -151,7 +151,7 @@ impl Drop for SshKeyFile {
 
 /// Build the `GIT_SSH_COMMAND` value: use the injected key, accept new host
 /// keys on first contact, and isolate the known-hosts store to a per-process
-/// file so leancd never touches the user's `~/.ssh/known_hosts`.
+/// file so Lean CD never touches the user's `~/.ssh/known_hosts`.
 fn format_ssh_command(key_path: &Path, known_hosts: &Path) -> String {
     format!(
         "ssh -i {} -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={}",

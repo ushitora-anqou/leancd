@@ -1,7 +1,7 @@
-//! End-to-end tests for leancd.
+//! End-to-end tests for Lean CD.
 //!
-//! Each scenario drives leancd and Forgejo as in-cluster Pods on an ephemeral
-//! `kind` cluster and asserts leancd's intended behaviour.
+//! Each scenario drives Lean CD and Forgejo as in-cluster Pods on an ephemeral
+//! `kind` cluster and asserts Lean CD's intended behavior.
 //! Every test is `#[ignore]` because it needs Docker + kind; run them with
 //! `make e2e`
 //! (== `cargo test --test e2e -- --ignored --test-threads=1 --nocapture`).
@@ -138,10 +138,10 @@ async fn git_change_detection_and_steady_state() {
 
 /// Resources whose specs gain server-injected defaults (StatefulSet
 /// volumeClaimTemplates, DaemonSet updateStrategy, …) must NOT read as drift on
-/// a steady-state pass — leancd would otherwise re-apply forever. Guards the
+/// a steady-state pass — Lean CD would otherwise re-apply forever. Guards the
 /// BUG 3/9 class at the cluster level: a no-op second sync leaves the
 /// StatefulSet's resourceVersion unchanged despite server defaults
-/// (storageClassName/resources) leancd never declared.
+/// (storageClassName/resources) Lean CD never declared.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires docker + kind; run with: make e2e"]
 async fn drift_no_reapply_on_server_defaults() {
@@ -225,7 +225,7 @@ async fn drift_self_heal() {
 }
 
 /// Scenario 4: a resource removed from Git is pruned; an unmanaged resource
-/// (no leancd label, never in the applied set) survives.
+/// (no Lean CD label, never in the applied set) survives.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires docker + kind; run with: make e2e"]
 async fn prune() {
@@ -252,7 +252,7 @@ async fn prune() {
     assert!(common::kubectl::exists("default", "configmap", "pr-cm1"));
     assert!(common::kubectl::exists("default", "configmap", "pr-cm2"));
 
-    // An unmanaged ConfigMap (no leancd label) — must survive pruning.
+    // An unmanaged ConfigMap (no Lean CD label) — must survive pruning.
     common::kubectl::apply_stdin(&manifests::configmap(
         "pr-unmanaged",
         "default",
@@ -373,7 +373,7 @@ async fn cli_status() {
     assert!(out.contains("managed:"), "missing managed line: {out}");
 }
 
-/// Scenario 8: leancd's metrics reach the OTel collector and re-export on its
+/// Scenario 8: Lean CD's metrics reach the OTel collector and re-export on its
 /// Prometheus endpoint with a sane RSS reading. `leancd_drift_detected` only
 /// emits a series while drift is present, so it is exercised indirectly by the
 /// drift scenario (drift self-heal implies detection worked) rather than here.
@@ -382,7 +382,7 @@ async fn cli_status() {
 async fn metrics() {
     common::Fixture::get();
     let text = common::metrics::scrape();
-    // leancd pushes several distinct metric families (at least 5:
+    // Lean CD pushes several distinct metric families (at least 5:
     // sync_total/sync_errors_total/last_success_timestamp_seconds/
     // managed_resources/rss_bytes; drift_detected is added only while drift is
     // present, so it is exercised by the drift scenario instead). Count unique
@@ -443,7 +443,7 @@ async fn cluster_and_namespaced_scope() {
     assert!(common::kubectl::exists("default", "configmap", "sc-cm"));
 }
 
-/// Scenario 10: leancd fetches a private Forgejo repo over HTTPS using basic
+/// Scenario 10: Lean CD fetches a private Forgejo repo over HTTPS using basic
 /// auth credentials from the Secret. A successful apply proves auth worked.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires docker + kind; run with: make e2e"]
@@ -464,7 +464,7 @@ async fn https_basic_auth() {
     assert!(common::kubectl::exists("default", "configmap", "https-cm"));
 }
 
-/// Scenario 11: leancd fetches over SSH using a registered public key and an
+/// Scenario 11: Lean CD fetches over SSH using a registered public key and an
 /// injected `GIT_SSH_KEY`.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires docker + kind; run with: make e2e"]
@@ -667,7 +667,7 @@ async fn error_recovery_skip_bad_manifest() {
                 manifests::configmap("er-good", "default", &[("k", "v")]),
             ),
             // A document missing apiVersion parses fine but is skipped by
-            // `value_to_manifest` (not a recognised manifest); the valid
+            // `value_to_manifest` (not a recognized manifest); the valid
             // ConfigMap is still applied and sync exits 0.
             (
                 "bad.yaml".into(),
@@ -714,7 +714,7 @@ async fn git_unreachable_records_error() {
 //
 // Hooks run in phases around the main apply (PreSync → main → PostSync, or
 // PreDelete → prune → PostDelete on a full teardown). A hook is a resource
-// carrying a `helm.sh/hook` annotation; leancd classifies it, orders it by
+// carrying a `helm.sh/hook` annotation; Lean CD classifies it, orders it by
 // `helm.sh/hook-weight`, applies it, awaits Job/Pod completion, and deletes it
 // per `helm.sh/hook-delete-policy`. Hooks never enter the applied set, so they
 // are not pruned. The hook container is the `leancd:latest` image (loaded into
@@ -811,7 +811,7 @@ async fn presync_failure_aborts_main() {
 }
 
 /// Scenario 20 (hook C): a PreSync hook with `hook-delete-policy: hook-succeeded`
-/// is deleted by leancd once it completes successfully, while the main resource
+/// is deleted by Lean CD once it completes successfully, while the main resource
 /// is applied and kept.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires docker + kind; run with: make e2e"]
@@ -1039,7 +1039,7 @@ async fn postsync_failure_keeps_main() {
 }
 
 /// Scenario 24 (hook G): a PreSync Pod hook (not a Job) is awaited to its
-/// terminal `phase`; leancd waits for `phase=Succeeded` before applying main.
+/// terminal `phase`; Lean CD waits for `phase=Succeeded` before applying main.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires docker + kind; run with: make e2e"]
 async fn pod_hook_completion() {
@@ -1211,7 +1211,7 @@ async fn weight_ordering_aborts_early() {
 /// tie-break that orders them is unit-tested in hooks::sort_by_weight. Here two
 /// PreSync hooks of equal weight both complete before main applies. (Argo CD
 /// runs Helm hooks by weight with the same all-run semantics; this is the
-/// leancd single-side guarantee of that behaviour.)
+/// Lean CD single-side guarantee of that behavior.)
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires docker + kind; run with: make e2e"]
 async fn hook_weight_equal_all_run() {
@@ -1343,7 +1343,7 @@ async fn graceful_shutdown_finishes_pass() {
         job_logs("leancd-graceful")
     );
 
-    // Send SIGTERM to leancd (PID 1) from inside the pod. Unlike `kubectl
+    // Send SIGTERM to Lean CD (PID 1) from inside the pod. Unlike `kubectl
     // delete pod`, this leaves the pod object in place, so its Terminated
     // status (exit code) stays readable (restartPolicy: Never keeps it).
     let kill = std::process::Command::new("kubectl")
@@ -1364,7 +1364,7 @@ async fn graceful_shutdown_finishes_pass() {
         kill.map(|o| String::from_utf8_lossy(&o.stderr).to_string())
     );
 
-    // The pod reaches Terminated with leancd's exit code.
+    // The pod reaches Terminated with Lean CD's exit code.
     let terminated = common::wait::wait_for(
         || {
             !common::kubectl::get_json("leancd", "pod", &pod)["status"]["containerStatuses"][0]
@@ -1440,7 +1440,7 @@ async fn health_lifecycle() {
     );
 }
 
-/// Scenario: the harness leancd Deployment pod runs under Pod Security
+/// Scenario: the harness Lean CD Deployment pod runs under Pod Security
 /// Standards "restricted" and is Running. Static assertions on the pod spec
 /// (every restricted field is already set in tests/leancd.yaml).
 #[tokio::test(flavor = "current_thread")]
@@ -1502,7 +1502,7 @@ async fn pss_restricted_deploy_pod() {
 
 // --- Foreground cascade deletion scenarios ---
 //
-// leancd deletes every resource with `DeleteParams::foreground()`. Foreground
+// Lean CD deletes every resource with `DeleteParams::foreground()`. Foreground
 // cascade stamps a `foregroundDeletion` finalizer on the owner and removes its
 // dependents first; background deletion does neither. To prove foreground
 // deterministically (without racing the kind GC), each scenario parks a *stall*
@@ -1512,7 +1512,7 @@ async fn pss_restricted_deploy_pod() {
 
 /// Scenario (fgdelete A): pruning a resource removed from Git uses foreground
 /// cascade. An unmanaged dependent ConfigMap (never in the applied set, so
-/// leancd never prunes it directly) carries an explicit ownerReference to the
+/// Lean CD never prunes it directly) carries an explicit ownerReference to the
 /// pruned owner and a stall finalizer; that holds the owner behind a
 /// `foregroundDeletion` finalizer — present only under foreground cascade.
 #[tokio::test(flavor = "current_thread")]
@@ -1538,7 +1538,7 @@ async fn fgdelete_prune() {
         "fg-pr-owner"
     ));
 
-    // Unmanaged dependent (no leancd label -> never pruned directly). Make it a
+    // Unmanaged dependent (no Lean CD label -> never pruned directly). Make it a
     // dependent of the owner and stall it.
     common::kubectl::apply_stdin(&manifests::configmap(
         "fg-pr-child",
@@ -1555,7 +1555,7 @@ async fn fgdelete_prune() {
     );
     common::fgdelete::add_stall_finalizer("default", "configmap", "fg-pr-child");
 
-    // Remove the owner from Git; leancd prunes it in the foreground.
+    // Remove the owner from Git; Lean CD prunes it in the foreground.
     common::git::remove_and_push(&clone, fj, &env.repo, &["owner.yaml".to_string()]);
     assert!(common::leancd::sync(&args).success);
 
@@ -1667,9 +1667,9 @@ async fn fgdelete_teardown() {
 /// Scenario (fgdelete C): the `before-hook-creation` delete policy (the default)
 /// removes a prior hook instance in the foreground on the *next* sync. After the
 /// first sync leaves the hook Job and its Pod in place, we stall the Pod and
-/// re-sync: leancd deletes the old Job in the foreground (before applying the
+/// re-sync: Lean CD deletes the old Job in the foreground (before applying the
 /// new one), so it lingers behind `foregroundDeletion` while the stalled Pod
-/// blocks it. We do not assert sync success: leancd does not wait for the
+/// blocks it. We do not assert sync success: Lean CD does not wait for the
 /// foreground delete to finish before re-applying, so the re-apply may collide
 /// with the still-terminating Job (a before-hook-creation caveat unrelated to
 /// what we observe) — the delete has already fired in the foreground by then.
@@ -1753,7 +1753,7 @@ async fn fgdelete_hook_before_creation() {
 /// the delete fires the instant the hook completes, we run the sync in the
 /// background and park a stall finalizer on the hook Pod *while* it runs — the
 /// Job script sleeps long enough to make that window deterministic. Once the
-/// hook succeeds, leancd deletes the Job in the foreground; the stalled Pod
+/// hook succeeds, Lean CD deletes the Job in the foreground; the stalled Pod
 /// blocks it, so the Job lingers behind `foregroundDeletion`.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires docker + kind; run with: make e2e"]
@@ -1786,7 +1786,7 @@ async fn fgdelete_hook_succeeded() {
     let args = env.sync_args(&fj.https_url(&env.repo));
 
     // Run sync in the background: the hook sleeps 60s, giving us time to stall
-    // its Pod before leancd deletes the completed Job.
+    // its Pod before Lean CD deletes the completed Job.
     let handle = common::leancd::sync_handle(args);
     let found = common::wait::wait_for(
         || common::kubectl::pod_name_by_selector("default", "job-name=fg-hs-job").is_some(),
@@ -2051,7 +2051,7 @@ async fn helm_install_deploys_controller() {
     );
     assert!(ok, "helm-installed Deployment did not become Available");
 
-    // Pod is Running and honours PSS restricted (same posture as tests/leancd.yaml).
+    // Pod is Running and honors PSS restricted (same posture as tests/leancd.yaml).
     let pod = common::kubectl::pod_name_by_selector(ns, "app.kubernetes.io/name=leancd")
         .expect("helm-installed pod not found");
     let p = common::kubectl::get_json(ns, "pod", &pod);

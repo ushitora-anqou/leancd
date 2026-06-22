@@ -1,43 +1,43 @@
-# Migrating from Argo CD to leancd
+# Migrating from Argo CD to Lean CD
 
 This is a hands-on, command-level guide for moving a cluster that Argo CD
-synces over to be managed by **leancd** — gradually, in place, with no big-bang
+synces over to be managed by **Lean CD** — gradually, in place, with no big-bang
 cutover and no downtime. Every step below was validated end-to-end on a local
-`kind` cluster running Argo CD and leancd side by side.
+`kind` cluster running Argo CD and Lean CD side by side.
 
-> For leancd's full feature reference see [`./user-manual.md`](./user-manual.md);
+> For Lean CD's full feature reference see [`./user-manual.md`](./user-manual.md);
 > for a first-time deploy walkthrough see [`./tutorial.md`](./tutorial.md); for
 > internals see [`./architecture.md`](./architecture.md); for the project
 > overview see [`../README.md`](../README.md).
 
 ## The one rule you must not break
 
-> **Never let leancd and another tool manage the same resource.** Hand off
+> **Never let Lean CD and another tool manage the same resource.** Hand off
 > ownership of each resource — atomically, one resource (or one namespace) at a
 > time — so that at every instant exactly one tool owns it.
 
-This rule exists because leancd's safety model is **destructive when
+This rule exists because Lean CD's safety model is **destructive when
 violated**:
 
-- Every resource leancd applies gets the label
+- Every resource Lean CD applies gets the label
   `app.kubernetes.io/managed-by=leancd` injected at apply time
   (`manifest.rs`, `inject_managed_label`).
-- leancd's pruner deletes, as a safety-net, any **live** resource carrying that
-  label that is **not** in leancd's current Git set (`prune.rs`).
+- Lean CD's pruner deletes, as a safety-net, any **live** resource carrying that
+  label that is **not** in Lean CD's current Git set (`prune.rs`).
 
-So if leancd is ever pointed at a resource another tool owns, it stamps the
-label on it — and the moment that resource later leaves leancd's Git path, the
+So if Lean CD is ever pointed at a resource another tool owns, it stamps the
+label on it — and the moment that resource later leaves Lean CD's Git path, the
 pruner deletes it, **including resources the other tool still depends on**.
 During validation this exact mechanism deleted an Argo-managed namespace's
-contents when leancd's path was narrowed; see [§5](#5-optional-observe-why-co-management-is-forbidden)
+contents when Lean CD's path was narrowed; see [§5](#5-optional-observe-why-co-management-is-forbidden)
 and the warning in [§6](#6-phase-1--hand-off-one-namespace).
 
-A secondary reason: leancd applies with server-side apply `.force()`
+A secondary reason: Lean CD applies with server-side apply `.force()`
 (`kube_util.rs`, `PatchParams::apply(field_manager).force()`), and Argo CD syncs
 with `--force-conflicts`. Two tools co-managing the same resource turns every
 field into a tug-of-war. (Validation showed that if both tools apply the
 *identical* manifest the result is actually stable — no `resourceVersion` churn —
-but co-management is still forbidden because of the pruner behaviour above, not
+but co-management is still forbidden because of the pruner behavior above, not
 because of thrashing.)
 
 ## 0. What you will do
@@ -55,8 +55,8 @@ because of thrashing.)
 The handoff mechanism, repeated per namespace:
 
 1. Stop Argo auto-sync (so Argo will not prune a resource mid-handoff).
-2. Move that namespace's manifests from Argo's Git path into leancd's Git path.
-3. Let leancd take ownership (first run = full apply, `.force()` reclaims the
+2. Move that namespace's manifests from Argo's Git path into Lean CD's Git path.
+3. Let Lean CD take ownership (first run = full apply, `.force()` reclaims the
    fields).
 4. Repeat until Argo's Git path is empty.
 5. Disarm Argo's cascade finalizer, delete the Argo Application (orphan —
@@ -66,42 +66,42 @@ The handoff mechanism, repeated per namespace:
 
 | Tool | Why | Check |
 |---|---|---|
-| `docker` | build the leancd image, run kind | `docker --version` |
+| `docker` | build the Lean CD image, run kind | `docker --version` |
 | `kind` | the local cluster | `kind version` |
 | `kubectl` | talk to the cluster | `kubectl version --client` |
 | `argocd` | drive Argo CD (login, repo add, sync) | `argocd version --client` |
 | `git` | prepare the repository | `git --version` |
 | `curl` | create the Forgejo repo | `curl --version` |
 
-`argocd` is not in the leancd flake devShell; install it separately (for
+`argocd` is not in the Lean CD flake devShell; install it separately (for
 example `nix profile install nixpkgs#argocd` — adjust to your package manager).
 
-**Repo format:** plain YAML only. leancd does not render Helm/Kustomize/Jsonnet.
+**Repo format:** plain YAML only. Lean CD does not render Helm/Kustomize/Jsonnet.
 If Argo CD renders charts for you, pre-render them (`helm template`, `kustomize
 build`) and commit the resulting YAML before starting.
 
-## 2. leancd behaviours that shape the migration
+## 2. Lean CD behaviors that shape the migration
 
 Keep these in mind throughout:
 
-- **Empty paths are refused.** leancd will not start with a path that matches no
+- **Empty paths are refused.** Lean CD will not start with a path that matches no
   directory: `config error: no directories matched path pattern(s) [...];
   refusing to sync as that would prune every managed resource`. This is a safety
-  feature. To run leancd while it owns nothing yet, point it at a real but
+  feature. To run Lean CD while it owns nothing yet, point it at a real but
   *empty* directory (a `.gitkeep` placeholder).
-- **First run = full apply.** With no prior state, leancd applies everything in
+- **First run = full apply.** With no prior state, Lean CD applies everything in
   its path and reclaims fields via `.force()` (`reconcile.rs`, `should_full_apply`).
-- **`managed-by=leancd` is permanent until removed.** Once leancd stamps it, the
-  pruner treats the resource as leancd's. Removing leancd's ownership cleanly is
+- **`managed-by=leancd` is permanent until removed.** Once Lean CD stamps it, the
+  pruner treats the resource as Lean CD's. Removing Lean CD's ownership cleanly is
   done by having the resource recreated (see [§11](#11-rollback--abort)).
-- **Argo CD hooks are invisible to leancd.** leancd reads `helm.sh/hook` only;
+- **Argo CD hooks are invisible to Lean CD.** Lean CD reads `helm.sh/hook` only;
   `argocd.argoproj.io/hook` and `argocd.argoproj.io/sync-wave` are ignored, so an
   Argo hook is applied as an ordinary resource with no phase ordering, no
   completion wait, and no auto-delete. See [§8](#8-convert-argo-cd-hooks).
-- **State is one ConfigMap** (`leancd-state`), deliberately *unlabelled* so the
+- **State is one ConfigMap** (`leancd-state`), deliberately *unlabeled* so the
   pruner never deletes it. Argo CD must never manage the `leancd` namespace.
 
-## 3. Stand up the validation cluster (kind + Forgejo + Argo CD + leancd)
+## 3. Stand up the validation cluster (kind + Forgejo + Argo CD + Lean CD)
 
 This mirrors [`./tutorial.md`](./tutorial.md) §4c (in-cluster Forgejo) and adds
 Argo CD into the same cluster.
@@ -110,14 +110,14 @@ Argo CD into the same cluster.
 kind create cluster --name migration
 ```
 
-### 3a. leancd image
+### 3a. Lean CD image
 
 ```sh
 docker build -t leancd:latest .
 kind load docker-image leancd:latest --name migration
 ```
 
-### 3b. In-cluster Forgejo (leancd's and Argo CD's shared Git server)
+### 3b. In-cluster Forgejo (Lean CD's and Argo CD's shared Git server)
 
 ```sh
 kubectl apply -f tests/forgejo.yaml
@@ -140,8 +140,8 @@ curl -sS -X POST -u leancd:leancd-e2e-pass -H "Content-Type: application/json" \
   http://127.0.0.1:3000/api/v1/user/repos
 ```
 
-Clone it and seed an empty placeholder so leancd has a valid (non-empty) path to
-own nothing from yet — recall leancd refuses an empty path:
+Clone it and seed an empty placeholder so Lean CD has a valid (non-empty) path to
+own nothing from yet — recall Lean CD refuses an empty path:
 
 ```sh
 git clone http://127.0.0.1:3000/leancd/manifests.git
@@ -154,7 +154,7 @@ git push    # user leancd / pass leancd-e2e-pass
 The repository now has two top-level areas we will move resources between:
 
 - `argocd-managed/` — Argo CD's source path (we fill this in [§4](#4-reproduce-the-argo-cd-managed-starting-state)).
-- `leancd-managed/` — leancd's source path (starts empty).
+- `leancd-managed/` — Lean CD's source path (starts empty).
 
 ### 3c. Argo CD
 
@@ -177,7 +177,7 @@ argocd repo add http://forgejo.forgejo.svc.cluster.local:3000/leancd/manifests.g
   --username leancd --password leancd-e2e-pass
 ```
 
-### 3d. leancd
+### 3d. Lean CD
 
 Install the chart pointed at the Forgejo repo and the `leancd-managed` path:
 
@@ -195,7 +195,7 @@ kubectl -n leancd logs deploy/leancd --tail=2
 # expect: reconciliation complete ... managed=0 ...   (owns nothing yet)
 ```
 
-The cluster now runs Argo CD and leancd side by side, each pointed at a
+The cluster now runs Argo CD and Lean CD side by side, each pointed at a
 disjoint path of the same repo.
 
 ## 4. Reproduce the Argo CD-managed starting state
@@ -269,7 +269,7 @@ data:
   greeting: hello-from-argo-b
 ```
 
-`argocd-managed/cluster/crd.yaml` (the same CRD leancd's own e2e suite uses):
+`argocd-managed/cluster/crd.yaml` (the same CRD Lean CD's own e2e suite uses):
 
 ```yaml
 apiVersion: apiextensions.k8s.io/v1
@@ -377,7 +377,7 @@ argocd app sync demo --server-side
 argocd app get demo | grep -E "Sync Status|Health Status"      # Synced / Healthy
 ```
 
-Confirm Argo CD owns everything and leancd is still idle:
+Confirm Argo CD owns everything and Lean CD is still idle:
 
 ```sh
 kubectl get cm cm-a -n app-a -o jsonpath='{.metadata.managedFields[*].manager}'
@@ -393,7 +393,7 @@ This section is for understanding. **Undo it immediately after, exactly as
 shown**, or [§6](#6-phase-1--hand-off-one-namespace) will destroy Argo's
 resources (see the warning there).
 
-Point leancd at the *same* path Argo manages and let it reconcile once:
+Point Lean CD at the *same* path Argo manages and let it reconcile once:
 
 ```sh
 kubectl -n leancd set env deployment/leancd LEANCD_PATH=argocd-managed
@@ -407,7 +407,7 @@ kubectl get cm cm-a -n app-a -o jsonpath='{.metadata.labels}'
 
 Because both apply the identical manifest, `resourceVersion` does **not** churn —
 the conflict is latent, not active. The danger is the label: those resources are
-now in leancd's prune set. Undo by **fully resetting leancd** so the label does
+now in Lean CD's prune set. Undo by **fully resetting Lean CD** so the label does
 not outlive the demo — and verify Argo recreates the resources clean:
 
 ```sh
@@ -415,15 +415,15 @@ kubectl -n leancd scale deploy leancd --replicas=0
 kubectl -n leancd delete cm leancd-state
 kubectl -n leancd set env deployment/leancd LEANCD_PATH=leancd-managed
 kubectl -n leancd scale deploy leancd --replicas=1
-# Re-sync Argo so it recreates the labelled resources WITHOUT managed-by:
+# Re-sync Argo so it recreates the labeled resources WITHOUT managed-by:
 argocd app sync demo --server-side
 kubectl get cm cm-a -n app-a -o jsonpath='{.metadata.labels}'    # {} again
 ```
 
 > **The lesson, concretely:** once `managed-by=leancd` is on a resource, the
-> only clean way to take it off leancd's books is to have the resource
-> recreated (Argo re-sync does this). If instead you just narrow leancd's path,
-> the pruner will delete the labelled-but-no-longer-in-Git resources on the next
+> only clean way to take it off Lean CD's books is to have the resource
+> recreated (Argo re-sync does this). If instead you just narrow Lean CD's path,
+> the pruner will delete the labeled-but-no-longer-in-Git resources on the next
 > pass — taking out resources Argo still needs.
 
 ## 6. Phase 1 — hand off one namespace
@@ -438,7 +438,7 @@ leave `argocd-managed/`:
 argocd app set demo --sync-policy none
 ```
 
-**Step 2 — move `app-b` into leancd's path** (Argo no longer sees it; with
+**Step 2 — move `app-b` into Lean CD's path** (Argo no longer sees it; with
 auto-sync off it will not prune it):
 
 ```sh
@@ -448,7 +448,7 @@ git mv argocd-managed/namespaces/app-b leancd-managed/namespaces/app-b
 git commit -qm "Phase 1: move app-b to leancd-managed" && git push
 ```
 
-**Step 3 — let leancd take ownership.** Its next poll is a first run for
+**Step 3 — let Lean CD take ownership.** Its next poll is a first run for
 `app-b`'s resources (a HEAD change triggers `full=true`); to do it now:
 
 ```sh
@@ -465,7 +465,7 @@ kubectl get cm cm-b -n app-b -o jsonpath='{.metadata.managedFields[*].manager}'
 # argocd-controller leancd   (Argo's entry lingers until §9 — harmless)
 ```
 
-Confirm drift self-heal now works under leancd:
+Confirm drift self-heal now works under Lean CD:
 
 ```sh
 kubectl patch cm cm-b -n app-b -p '{"data":{"greeting":"HACKED"}}'
@@ -473,7 +473,7 @@ kubectl -n leancd exec deploy/leancd -- leancd sync   # logs: drift detected
 kubectl get cm cm-b -n app-b -o jsonpath='{.data.greeting}'   # hello-from-argo-b
 ```
 
-And confirm leancd is **not** touching `app-a`, which is still Argo's:
+And confirm Lean CD is **not** touching `app-a`, which is still Argo's:
 
 ```sh
 kubectl get cm cm-a -n app-a -o jsonpath='{.metadata.labels}'   # {} (no managed-by)
@@ -496,8 +496,8 @@ kubectl -n leancd exec deploy/leancd -- leancd sync
 Argo CD's `argocd-managed/` is now empty; the `demo` Application shows
 `OutOfSync` but, with auto-sync off, prunes nothing.
 
-**CRD + CR note.** Here the CRD already existed (Argo created it), so leancd
-takes both the CRD and its CR over in a single pass. If leancd ever has to
+**CRD + CR note.** Here the CRD already existed (Argo created it), so Lean CD
+takes both the CRD and its CR over in a single pass. If Lean CD ever has to
 *create* a CRD from scratch, the CR whose CRD is not yet established is skipped
 (non-fatal) and lands on the **second** `leancd sync` once discovery sees the
 new CRD. Trigger a second pass if needed:
@@ -509,20 +509,20 @@ kubectl get leancdtest crd-test -n app-a    # present
 
 ## 8. Convert Argo CD hooks
 
-leancd does not read `argocd.argoproj.io/hook` or `sync-wave`. Under leancd the
+Lean CD does not read `argocd.argoproj.io/hook` or `sync-wave`. Under Lean CD the
 hook Jobs from [§4](#4-reproduce-the-argo-cd-managed-starting-state) are applied
 as ordinary resources — no PreSync/PostSync ordering, no completion wait, no
-auto-delete. To keep hook behaviour, convert to `helm.sh/hook`, which leancd
-honours with Argo-CD-equivalent semantics (`hooks.rs`, `user-manual.md` §2):
+auto-delete. To keep hook behavior, convert to `helm.sh/hook`, which Lean CD
+honors with Argo-CD-equivalent semantics (`hooks.rs`, `user-manual.md` §2):
 
-| Argo CD | leancd (`helm.sh/hook`) |
+| Argo CD | Lean CD (`helm.sh/hook`) |
 |---|---|
 | `argocd.argoproj.io/hook: PreSync` | `helm.sh/hook: pre-install` |
 | `argocd.argoproj.io/hook: PostSync` | `helm.sh/hook: post-install` |
 | `argocd.argoproj.io/hook-delete-policy: HookSucceeded` | `helm.sh/hook-delete-policy: hook-succeeded` |
 | `argocd.argoproj.io/sync-wave: "N"` | `helm.sh/hook-weight: "N"` |
 
-> **No leancd equivalent for `SyncFail` or cross-phase `sync-wave`.** `hook-weight`
+> **No Lean CD equivalent for `SyncFail` or cross-phase `sync-wave`.** `hook-weight`
 > orders within a phase only. If a hook depends on these, decide case by case.
 
 `leancd-managed/hooks/presync-job.yaml` becomes:
@@ -551,7 +551,7 @@ spec:
 ```
 
 (analogously `postsync-job.yaml` with `helm.sh/hook: post-install`). Commit,
-push, sync, and confirm leancd now runs them as hooks — pre-install before the
+push, sync, and confirm Lean CD now runs them as hooks — pre-install before the
 main apply, post-install after, each awaited to completion:
 
 ```sh
@@ -566,7 +566,7 @@ kubectl get events -n app-a --sort-by=.lastTimestamp | tail
 
 ## 9. Remove Argo CD
 
-Once leancd owns every resource, retire Argo CD without destroying them.
+Once Lean CD owns every resource, retire Argo CD without destroying them.
 
 **Disarm the cascade finalizer first**, then delete the Application (orphan
 delete — Argo's deletion will not cascade):
@@ -616,7 +616,7 @@ kubectl -n leancd exec deploy/leancd -- leancd sync       # resource recreated
 
 > **Cosmetic note:** after removing Argo CD you may still see an
 > `argocd-controller` entry in some resources' `metadata.managedFields`. It is
-> inert — Argo CD is gone and will never write again — and leancd owns the fields
+> inert — Argo CD is gone and will never write again — and Lean CD owns the fields
 > that matter (`.force()` reclaimed them). It does not affect drift or prune. A
 > full clean-up requires recreating the resource (brief downtime); it is purely
 > cosmetic and can be ignored.
@@ -627,12 +627,12 @@ Before Argo CD is removed ([§9](#9-remove-argo-cd)), you can hand a namespace
 back: move its manifests from `leancd-managed/` to `argocd-managed/`, re-enable
 Argo auto-sync (`argocd app set demo --sync-policy automated`), and `argocd app
 sync demo`. Argo's force-apply reclaims the fields. The `managed-by=leancd`
-label leancd stamped will linger unless the resource is recreated — it is
+label Lean CD stamped will linger unless the resource is recreated — it is
 harmless to Argo (Argo does not read it) but, if you want it gone, delete and
 let Argo recreate the resource.
 
-**Do not** roll back by simply narrowing leancd's path: the pruner will delete
-the labelled resources that left the path (the [§5](#5-optional-observe-why-co-management-is-forbidden)
+**Do not** roll back by simply narrowing Lean CD's path: the pruner will delete
+the labeled resources that left the path (the [§5](#5-optional-observe-why-co-management-is-forbidden)
 trap).
 
 ## 12. Clean up
@@ -643,9 +643,9 @@ kind delete cluster --name migration
 
 ## 13. Further reading
 
-- [`./user-manual.md`](./user-manual.md) — full leancd reference (Helm hooks,
+- [`./user-manual.md`](./user-manual.md) — full Lean CD reference (Helm hooks,
   prune, SSA, metrics).
 - [`./tutorial.md`](./tutorial.md) — first-time deploy into a kind cluster.
-- [`./architecture.md`](./architecture.md) — why leancd's prune, drift, and SSA
+- [`./architecture.md`](./architecture.md) — why Lean CD's prune, drift, and SSA
   are shaped the way they are.
 - [`../README.md`](../README.md) — project overview.
