@@ -95,11 +95,22 @@ fn exec_leancd(sub: &str, args: &[String]) -> RunResult {
 /// Launch a short-poll (2s) Lean CD controller as a Job, so a scenario can
 /// observe automatic reconciliation. `args` are the common flags (the same
 /// `sync_args` used by `sync`). The Job is deleted when the handle drops.
-pub fn controller(name: &str, mut args: Vec<String>) -> ControllerHandle {
+pub fn controller(name: &str, args: Vec<String>) -> ControllerHandle {
+    controller_with_opts(name, args, "2s")
+}
+
+/// Like [`controller`] but with a configurable poll interval. Used by watch
+/// scenarios that pin a long poll so a fast self-heal can only come from the
+/// watch trigger, not from the periodic loop.
+pub fn controller_with_opts(
+    name: &str,
+    mut args: Vec<String>,
+    poll_interval: &str,
+) -> ControllerHandle {
     let mut full = vec!["controller".to_string()];
     full.append(&mut args);
     full.push("--poll-interval".into());
-    full.push("2s".into());
+    full.push(poll_interval.into());
     let args_yaml: String = full
         .iter()
         .map(|a| {
@@ -121,7 +132,7 @@ pub fn controller(name: &str, mut args: Vec<String>) -> ControllerHandle {
          envFrom:\n            - secretRef:\n                name: leancd-git-credentials\n"
     );
     kubectl::apply_stdin(&job);
-    eprintln!(">> started controller job {name}");
+    eprintln!(">> started controller job {name} (poll-interval {poll_interval})");
     ControllerHandle {
         name: name.to_string(),
     }

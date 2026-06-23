@@ -1990,6 +1990,137 @@ async fn reconcile_lock_serializes_concurrent_passes() {
     common::kubectl::delete(&env.namespace, "lease", &lease);
 }
 
+/// Scenario (watch): with watch enabled and a LONG poll interval (300s), an
+/// out-of-band edit is detected and self-healed within seconds — proving the
+/// watch trigger (not the periodic poll) drove the heal. A heal inside the
+/// 30s assertion window can ONLY come from the watch, since the poll is 300s.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn watch_self_heal_fast() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("watch-heal");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "cm.yaml".into(),
+            manifests::configmap("wh-cm", "default", &[("k", "v")]),
+        )],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    // Seed state so the controller's first pass is a drift-check (not a full
+    // apply) and it establishes watch streams for the ConfigMap GVK.
+    assert!(common::leancd::sync(&args).success);
+    assert!(common::kubectl::exists("default", "configmap", "wh-cm"));
+
+    // Long-poll controller: a heal within the window can ONLY come from watch.
+    let _ctrl = common::leancd::controller_with_opts("leancd-ctrl-watch", args.clone(), "300s");
+
+    // Give the controller one pass to establish the watch streams.
+    common::wait::wait_for(
+        || common::kubectl::exists("default", "configmap", "wh-cm"),
+        Duration::from_secs(10),
+        Duration::from_millis(500),
+    );
+
+    // Out-of-band edit drifts the live ConfigMap away from Git.
+    common::kubectl::apply_stdin(&manifests::configmap(
+        "wh-cm",
+        "default",
+        &[("k", "tampered")],
+    ));
+
+    // The watch must detect + self-heal within seconds (debounce + one pass),
+    // far below the 300s poll.
+    let healed = common::wait::wait_for(
+        || {
+            let cm = common::kubectl::get_json("default", "configmap", "wh-cm");
+            cm["data"]["k"].as_str() == Some("v")
+        },
+        Duration::from_secs(30),
+        Duration::from_millis(500),
+    );
+    assert!(
+        healed,
+        "watch did not self-heal the drifted ConfigMap within 30s (poll was 300s)"
+    );
+
+    let lease = format!("{}-reconcile-lock", env.state_cm);
+    common::kubectl::delete(&env.namespace, "lease", &lease);
+}
+
+/// Scenario (watch): a watch-triggered reconcile and a concurrent manual
+/// `leancd sync` overlap; the Lease serializes them, and the cluster converges
+/// with no error recorded in state. Mirrors
+/// `reconcile_lock_serializes_concurrent_passes` with watch enabled.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn watch_concurrent_safe() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("watch-conc");
+    fj.create_repo(&env.repo, false);
+    let clone = common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "cm.yaml".into(),
+            manifests::configmap("wc-cm", "default", &[("k", "1")]),
+        )],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    assert!(common::leancd::sync(&args).success);
+
+    // Watch-enabled controller.
+    let _ctrl = common::leancd::controller_with_opts("leancd-ctrl-watchconc", args.clone(), "5s");
+
+    // Push a new resource, drift the live object, then run a concurrent manual
+    // sync while the controller's watch may also fire. The Lease serializes.
+    common::git::push_more(
+        &clone,
+        fj,
+        &env.repo,
+        &[(
+            "cm2.yaml".into(),
+            manifests::configmap("wc-cm2", "default", &[("k", "2")]),
+        )],
+    );
+    common::kubectl::apply_stdin(&manifests::configmap(
+        "wc-cm",
+        "default",
+        &[("k", "tampered")],
+    ));
+    let res = common::leancd::sync(&args);
+    assert!(res.success, "concurrent sync failed: {}", res.stderr);
+
+    // Final consistency: new resource present, drift healed, no state error.
+    assert!(
+        common::wait::wait_for(
+            || {
+                common::kubectl::exists("default", "configmap", "wc-cm2") && {
+                    let cm = common::kubectl::get_json("default", "configmap", "wc-cm");
+                    cm["data"]["k"].as_str() == Some("1")
+                }
+            },
+            Duration::from_secs(60),
+            Duration::from_millis(500),
+        ),
+        "watch + concurrent sync did not converge"
+    );
+
+    let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
+    let s = state_json(&st);
+    assert!(
+        s.get("last_error").map(|v| v.is_null()).unwrap_or(true),
+        "state should have no last_error after concurrent watch+sync, got: {s}"
+    );
+
+    let lease = format!("{}-reconcile-lock", env.state_cm);
+    common::kubectl::delete(&env.namespace, "lease", &lease);
+}
+
 /// Scenario: `helm install charts/leancd` brings up the controller, the first
 /// reconcile succeeds, and the `leancd health` probe goes fresh — the
 /// `deploy/*.yaml` → chart migration path. Uses a dedicated release/namespace
