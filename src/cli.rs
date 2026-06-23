@@ -123,6 +123,20 @@ pub struct CommonArgs {
     /// it before skipping this pass with a "busy" INFO log (not an error).
     #[arg(long, env = "LEANCD_LOCK_WAIT_TIMEOUT_SECS", default_value = "30")]
     pub lock_wait_timeout_secs: u64,
+
+    /// How cluster-side drift is detected: `off` (periodic poll only), `trigger`
+    /// (watch wakes the loop; drift checked via the existing List), or `cache`
+    /// (watch + Store cache; drift read from the cache, so no per-pass List).
+    /// See `--watch-debounce`. Defaults to `cache` — measured (see `bench/`) to
+    /// stay well under the RSS budget while avoiding per-poll apiserver Lists.
+    #[arg(long, env = "LEANCD_WATCH_MODE", default_value = "cache")]
+    pub watch_mode: String,
+
+    /// Debounce window for watch-triggered reconciles (e.g. `500ms`): a burst of
+    /// watch events within this window collapses into one pass, so a reconnect's
+    /// InitApply burst or a rapid edit storm does not trigger N passes.
+    #[arg(long, env = "LEANCD_WATCH_DEBOUNCE", default_value = "500ms")]
+    pub watch_debounce: String,
 }
 
 impl CommonArgs {
@@ -154,6 +168,8 @@ impl CommonArgs {
             health_stale_factor: self.health_stale_factor,
             lock_lease_duration: Duration::from_secs(self.lock_lease_duration_secs),
             lock_wait_timeout: Duration::from_secs(self.lock_wait_timeout_secs),
+            watch_mode: crate::watch::WatchMode::parse(&self.watch_mode)?,
+            watch_debounce: parse_duration(&self.watch_debounce)?,
         })
     }
 }
@@ -184,6 +200,8 @@ mod tests {
             health_stale_factor: 10,
             lock_lease_duration_secs: 60,
             lock_wait_timeout_secs: 30,
+            watch_mode: "off".into(),
+            watch_debounce: "500ms".into(),
         }
     }
 
@@ -196,6 +214,45 @@ mod tests {
         assert_eq!(
             common(0).to_config().unwrap().hook_timeout,
             Duration::from_secs(0)
+        );
+    }
+
+    #[test]
+    fn watch_mode_parses_valid_variants() {
+        let mut a = common(300);
+        a.watch_mode = "trigger".into();
+        assert_eq!(
+            a.to_config().unwrap().watch_mode,
+            crate::watch::WatchMode::Trigger
+        );
+        let mut a = common(300);
+        a.watch_mode = "CACHE".into();
+        assert_eq!(
+            a.to_config().unwrap().watch_mode,
+            crate::watch::WatchMode::Cache
+        );
+        let mut a = common(300);
+        a.watch_mode = "off".into();
+        assert_eq!(
+            a.to_config().unwrap().watch_mode,
+            crate::watch::WatchMode::Off
+        );
+    }
+
+    #[test]
+    fn watch_mode_rejects_invalid() {
+        let mut a = common(300);
+        a.watch_mode = "bogus".into();
+        assert!(a.to_config().is_err());
+    }
+
+    #[test]
+    fn watch_debounce_parses_duration() {
+        let mut a = common(300);
+        a.watch_debounce = "750ms".into();
+        assert_eq!(
+            a.to_config().unwrap().watch_debounce,
+            Duration::from_millis(750)
         );
     }
 }

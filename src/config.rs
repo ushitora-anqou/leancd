@@ -81,6 +81,15 @@ pub struct Config {
     /// enough to ride out a peer's quick pass, short enough that a manual `sync`
     /// does not block excessively.
     pub lock_wait_timeout: std::time::Duration,
+
+    /// How cluster-side resource changes wake the reconcile loop
+    /// (`off`/`trigger`/`cache`). See `watch.rs`. `off` (default) means
+    /// periodic-poll drift detection only — today's behavior.
+    pub watch_mode: crate::watch::WatchMode,
+    /// Debounce window for watch-triggered reconciles: a burst of watch events
+    /// within this window collapses into one pass (avoids N passes on a
+    /// reconnect `InitApply` burst or a rapid edit storm).
+    pub watch_debounce: std::time::Duration,
 }
 
 impl Config {
@@ -292,6 +301,8 @@ mod tests {
             health_stale_factor: 10,
             lock_lease_duration: std::time::Duration::from_secs(60),
             lock_wait_timeout: std::time::Duration::from_secs(30),
+            watch_mode: crate::watch::WatchMode::Off,
+            watch_debounce: std::time::Duration::from_millis(500),
         }
     }
 

@@ -2,14 +2,17 @@
 //! (single pass). Fetches Git, parses manifests, applies via server-side apply,
 //! prunes removed resources, detects drift, and persists state.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kube::client::Client;
+use kube::core::DynamicObject;
+use kube::runtime::reflector::Store;
 use rand::Rng;
+use tokio::sync::Notify;
 
 use crate::config::Config;
 use crate::error::{Error, Result};
@@ -19,6 +22,7 @@ use crate::kube_util;
 use crate::lock;
 use crate::manifest::{self, RawManifest};
 use crate::metrics::Metrics;
+use crate::watch;
 use crate::{drift, prune, state};
 
 /// Drives a single repository-sync target.
@@ -29,6 +33,16 @@ pub struct Reconciler {
     /// Cooperative shutdown flag: the loop checks it between passes (and
     /// short-circuits the inter-pass sleep) and exits cleanly when it is set.
     pub stop: Arc<AtomicBool>,
+    /// Last parsed managed-GVK set, stashed by `reconcile_inner` for `run_loop`
+    /// to rebuild the watch streams between passes. Held only briefly between
+    /// passes (never across an `.await`), so the lock never contends with the
+    /// watch drivers. `sync` (one-shot) never reads this.
+    pub last_gvks: Arc<Mutex<HashSet<watch::GvkKey>>>,
+    /// Cache-mode object stores, snapshotted from the `WatchSet` after each
+    /// `rebuild` so `reconcile_inner` can drift-check from the cache instead of
+    /// `List`ing. Empty (and unused) in `Trigger`/`Off` modes. `Store` is
+    /// `Arc`-backed, so cloning is cheap and shares the watch driver's live data.
+    pub cache_stores: Arc<Mutex<HashMap<watch::GvkKey, Store<DynamicObject>>>>,
 }
 
 impl Reconciler {
@@ -186,7 +200,18 @@ impl Reconciler {
                 post_error = Some(format!("post-sync hook failed: {reason}"));
             }
         } else {
-            drifts = drift::detect(&self.client, &classified.main, &self.cfg).await?;
+            // Cache mode drift-checks against the watch-backed Store (no List);
+            // Trigger/Off modes List live objects as before.
+            drifts = if self.cfg.watch_mode == watch::WatchMode::Cache {
+                let stores = self
+                    .cache_stores
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
+                drift::detect_from_stores(&classified.main, &stores)
+            } else {
+                drift::detect(&self.client, &classified.main, &self.cfg).await?
+            };
             for d in &drifts {
                 tracing::warn!(key = ?d.key, reason = %d.reason, "drift detected");
             }
@@ -253,6 +278,14 @@ impl Reconciler {
         }
         for ((group, version, kind), n) in drift_by_gvk {
             self.metrics.set_drift(&group, &version, &kind, n);
+        }
+
+        // Stash the distinct managed GVKs so `run_loop` can rebuild the watch
+        // streams between passes (a diff against the running set).
+        let managed_gvks: HashSet<watch::GvkKey> =
+            classified.main.iter().map(|m| m.gvk()).collect();
+        if let Ok(mut g) = self.last_gvks.lock() {
+            *g = managed_gvks;
         }
 
         tracing::info!(
@@ -341,6 +374,30 @@ impl Reconciler {
     /// flag, so callers can `await` the handle for a graceful shutdown and fall
     /// back to `abort()` after a timeout.
     pub async fn run_loop(&self) -> Result<()> {
+        // Watch trigger (off by default). A watch driver per managed GVK pokes
+        // `notify` on any cluster-side change; the select below wakes the loop
+        // early instead of waiting for `delay`. The watch only changes WHEN a
+        // pass runs — the triggered pass still goes through `run_once` →
+        // `reconcile` → Lease, so serialization is unchanged (no re-entrancy:
+        // there is exactly one `run_once` call site, in this loop).
+        let notify = Arc::new(Notify::new());
+        let mut watch_set = if matches!(self.cfg.watch_mode, watch::WatchMode::Off) {
+            None
+        } else {
+            let sel = format!(
+                "{}={}",
+                self.cfg.managed_label_key, self.cfg.managed_label_value
+            );
+            tracing::info!(mode = ?self.cfg.watch_mode, "watch mode enabled");
+            Some(watch::WatchSet::new(
+                self.client.clone(),
+                sel,
+                self.cfg.watch_mode,
+                self.stop.clone(),
+                notify.clone(),
+            ))
+        };
+
         let mut consecutive_failures: u32 = 0;
         loop {
             if self.stop.load(Ordering::Acquire) {
@@ -354,6 +411,20 @@ impl Reconciler {
                 Err(e) => {
                     tracing::error!(error = %e, "reconciliation failed");
                     consecutive_failures = consecutive_failures.saturating_add(1);
+                }
+            }
+
+            // Rebuild the watched-GVK set from the manifests just parsed (a diff
+            // against the running set, so steady-state passes are a no-op and do
+            // not churn streams). In cache mode, also snapshot the stores so the
+            // next pass's drift-check reads fresh cached state.
+            if let Some(w) = watch_set.as_mut() {
+                let gvks = self.last_gvks.lock().map(|g| g.clone()).unwrap_or_default();
+                w.rebuild(gvks).await;
+                if w.uses_cache() {
+                    if let Ok(mut cs) = self.cache_stores.lock() {
+                        *cs = w.stores().clone();
+                    }
                 }
             }
 
@@ -378,15 +449,25 @@ impl Reconciler {
                 );
             }
 
-            // Sleep, but wake immediately if shutdown is requested so a signal
-            // during the idle interval does not wait for the full delay.
+            // Sleep, but wake immediately on a watch poke or a shutdown request.
+            // On a watch poke, hold a debounce window so a burst of events (a
+            // reconnect's InitApply burst, or a rapid edit storm) collapses into
+            // a single pass rather than N. `Notify::notified` is cancel-safe.
             tokio::select! {
                 _ = tokio::time::sleep(delay) => {}
+                _ = notify.notified() => {
+                    if !self.stop.load(Ordering::Acquire) {
+                        tokio::time::sleep(self.cfg.watch_debounce).await;
+                    }
+                }
                 _ = self.watch_stop() => {
                     tracing::info!("shutdown requested during sleep; exiting");
                     break;
                 }
             }
+        }
+        if let Some(mut w) = watch_set {
+            w.shutdown();
         }
         Ok(())
     }

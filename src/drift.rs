@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use kube::core::DynamicObject;
+use kube::runtime::reflector::Store;
 use serde_json::Value;
 
 use crate::config::Config;
@@ -100,6 +101,29 @@ pub fn compute_drifts(
         }
     }
     drifts
+}
+
+/// Detect drift by reading live objects from cache-mode `Store`s rather than
+/// `List`ing them from the API. Pure w.r.t. the API: each store is snapshotted
+/// via `state()` and fed to [`compute_drifts`]. A GVK present in `manifests` but
+/// absent from `stores` is treated as "nothing live for this kind", so every
+/// manifest of that kind is reported missing (the pass then re-applies,
+/// populating the store on the next watch event). This is the cache-mode
+/// counterpart of `detect`; both share [`compute_drifts`].
+pub fn detect_from_stores(
+    manifests: &[RawManifest],
+    stores: &HashMap<(String, String, String), Store<DynamicObject>>,
+) -> Vec<DriftItem> {
+    let mut live_by_gvk: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
+    for (gvk, store) in stores {
+        let objs: Vec<DynamicObject> = store
+            .state()
+            .into_iter()
+            .map(|arc| (*arc).clone())
+            .collect();
+        live_by_gvk.insert(gvk.clone(), objs);
+    }
+    compute_drifts(manifests, &live_by_gvk)
 }
 
 /// Find the live object that matches a manifest by name and namespace.
@@ -547,5 +571,88 @@ mod tests {
     fn remove_top_level_keys_empty_slice_is_clone() {
         let v = json!({"a": 1, "b": 2});
         assert_eq!(remove_top_level_keys(&v, &[]), json!({"a": 1, "b": 2}));
+    }
+
+    // --- detect_from_stores: reads live objects from a watch-backed Store ---
+
+    fn store_with(kind: &str, live: Vec<DynamicObject>) -> Store<DynamicObject> {
+        use kube::core::ApiResource;
+        use kube::runtime::reflector::store::Writer;
+        use kube::runtime::watcher;
+        let ar = ApiResource {
+            group: String::new(),
+            version: "v1".into(),
+            api_version: "v1".into(),
+            kind: kind.into(),
+            plural: format!("{}s", kind.to_lowercase()),
+        };
+        let mut writer: Writer<DynamicObject> = Writer::new(ar);
+        for obj in live {
+            writer.apply_watcher_event(&watcher::Event::Apply(obj));
+        }
+        writer.as_reader()
+    }
+
+    #[test]
+    fn detect_from_stores_reads_cache() {
+        let store = store_with(
+            "ConfigMap",
+            vec![dyn_obj("c", Some("ns"), json!({"data": {"k": "1"}}))],
+        );
+        let mut stores: HashMap<(String, String, String), Store<DynamicObject>> = HashMap::new();
+        stores.insert(
+            ("".to_string(), "v1".to_string(), "ConfigMap".to_string()),
+            store,
+        );
+
+        // Manifest matches the cached object → no drift.
+        let m = test_manifest(
+            "",
+            "ConfigMap",
+            "c",
+            Some("ns"),
+            json!({"data": {"k": "1"}}),
+        );
+        assert!(detect_from_stores(&[m], &stores).is_empty());
+
+        // Manifest diverges from the cache → drift flagged.
+        let m2 = test_manifest(
+            "",
+            "ConfigMap",
+            "c",
+            Some("ns"),
+            json!({"data": {"k": "2"}}),
+        );
+        assert_eq!(detect_from_stores(&[m2], &stores).len(), 1);
+
+        // A manifest whose kind has no cache entry → reported missing.
+        let m3 = test_manifest("", "Namespace", "n", None, json!({}));
+        assert_eq!(detect_from_stores(&[m3], &stores).len(), 1);
+    }
+
+    #[test]
+    fn detect_from_stores_empty_when_live_is_superset() {
+        let store = store_with(
+            "ConfigMap",
+            vec![dyn_obj(
+                "c",
+                Some("ns"),
+                json!({"data": {"k": "1"}, "extra": true}),
+            )],
+        );
+        let mut stores: HashMap<(String, String, String), Store<DynamicObject>> = HashMap::new();
+        stores.insert(
+            ("".to_string(), "v1".to_string(), "ConfigMap".to_string()),
+            store,
+        );
+        // Live is a superset of the manifest (subset check holds) → no drift.
+        let m = test_manifest(
+            "",
+            "ConfigMap",
+            "c",
+            Some("ns"),
+            json!({"data": {"k": "1"}}),
+        );
+        assert!(detect_from_stores(&[m], &stores).is_empty());
     }
 }

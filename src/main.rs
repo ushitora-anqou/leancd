@@ -15,9 +15,13 @@ mod prune;
 mod reconcile;
 mod state;
 mod version;
+mod watch;
 
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use clap::Parser;
 use kube::Client;
@@ -103,6 +107,8 @@ async fn run_controller(cfg: config::Config) -> Result<()> {
         cfg,
         metrics,
         stop: stop.clone(),
+        last_gvks: Arc::new(Mutex::new(HashSet::new())),
+        cache_stores: Arc::new(Mutex::new(HashMap::new())),
     };
     let mut recon_handle = tokio::spawn(async move {
         let _ = recon.run_loop().await;
@@ -144,6 +150,8 @@ async fn run_sync(cfg: config::Config) -> Result<()> {
         cfg,
         metrics,
         stop: Arc::new(AtomicBool::new(false)),
+        last_gvks: Arc::new(Mutex::new(HashSet::new())),
+        cache_stores: Arc::new(Mutex::new(HashMap::new())),
     };
     let res = recon.run_once().await;
     if let Err(e) = provider.shutdown() {
