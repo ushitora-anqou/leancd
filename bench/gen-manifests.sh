@@ -14,14 +14,18 @@ NS_COUNT="${1:-15}"
 OUT="${2:-manifests}"
 mkdir -p "$OUT"
 
-# Per-namespace workload composition (the "heavy" profile).
-DEP_PER_NS=5
-STS_PER_NS=2
-CM_PER_NS=8
-SVC_PER_NS=3
+# Per-namespace workload composition (the "heavy" profile). Each is overridable
+# via env (BENCH_DEP_PER_NS / BENCH_STS_PER_NS / BENCH_CM_PER_NS /
+# BENCH_SVC_PER_NS) so the cache-bloat scenarios can scale object counts.
+DEP_PER_NS="${BENCH_DEP_PER_NS:-5}"
+STS_PER_NS="${BENCH_STS_PER_NS:-2}"
+CM_PER_NS="${BENCH_CM_PER_NS:-8}"
+SVC_PER_NS="${BENCH_SVC_PER_NS:-3}"
 
-# Reused ConfigMap payload (generated once, not per-resource).
-PAYLOAD="$(printf 'x%.0s' $(seq 1 200))"
+# Reused ConfigMap payload (generated once, not per-resource). Size is tunable
+# via BENCH_PAYLOAD_BYTES (default 200) for the large-object cache-bloat scenario.
+PAYLOAD_BYTES="${BENCH_PAYLOAD_BYTES:-200}"
+PAYLOAD="$(head -c "$PAYLOAD_BYTES" /dev/zero | tr '\0' 'x')"
 
 for n in $(seq 1 "$NS_COUNT"); do
   ns="leancd-bench-ns-$n"

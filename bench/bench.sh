@@ -24,7 +24,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NS_COUNT="${BENCH_NAMESPACE_COUNT:-15}"
-BUDGET_BYTES=$(( ${RSS_BUDGET_MIB:-100} * 1024 * 1024 ))
+BUDGET_BYTES=$(( ${RSS_BUDGET_MIB:-50} * 1024 * 1024 ))
 CLUSTER="${KIND_CLUSTER_NAME:-leancd-bench}"
 WORK="$(mktemp -d)"
 LEANC_PID=""
