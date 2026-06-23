@@ -71,7 +71,8 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | `hooks.rs` | Helm-hook classification + execution (Argo CD-equivalent phases, weights, delete-policy, Job/Pod completion wait) |
 | `reconcile.rs` | The `Reconciler` engine shared by `controller` and `sync` |
 | `lock.rs` | Reconcile-pass mutual exclusion via a `coordination.k8s.io/v1` Lease (one pass at a time, cluster-wide); stale-lease reclaim |
-| `drift.rs` | Per-GVK `List` + subset comparison for drift detection |
+| `watch.rs` | Optional watch trigger (`--watch-mode`): per-GVK `watcher`/`reflector` drivers that wake `run_loop` on a cluster-side change, collapsing drift-detection latency below `poll_interval` |
+| `drift.rs` | Per-GVK `List` (or `Store` read in cache mode) + subset comparison for drift detection |
 | `prune.rs` | Two-signal deletion of resources removed from Git; honors `resource-policy: keep` and Helm hooks |
 | `state.rs` | Single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
 | `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics; exposes `leancd_rss_bytes`. No HTTP listener. |
@@ -261,14 +262,32 @@ would dominate RSS on large clusters, so it is avoided entirely.
 applying each resource. Discovery and per-resource apply failures are logged
 and counted, but do not abort the pass.
 
-## 8. Drift detection — periodic List, not Watch
+## 8. Drift detection — periodic List, Watch-triggered
 
 Drift detection runs only on **steady-state passes** (prior state
-present, HEAD unchanged) — every other pass is a full apply. This is done with
-periodic `List` calls, never `Watch`: a `Watch` keeps a long-lived connection
-and a streaming cache, and Lean CD only ever compares the resources Git directly
-points at, so one `List` per managed GVK is enough and costs no resident memory
-between passes.
+present, HEAD unchanged) — every other pass is a full apply. Historically this
+was periodic `List` only; Lean CD now **also watches** the `managed-by`
+resources (`watch.rs`) so a cluster-side edit (`kubectl`, another controller)
+wakes the reconcile loop within the debounce window instead of waiting up to
+`poll_interval`. Three `--watch-mode`s, selected at runtime:
+
+- `cache` (default): a `reflector` + `Store` per managed GVK; drift detection
+  reads live state from the stores (`drift::detect_from_stores`) with **no
+  per-pass `List`**. Holds a cache of all managed objects (scales with object
+  count; measured to stay well under the budget).
+- `trigger`: a `watcher` stream per managed GVK pokes a `Notify` on any
+  `touched` event (an apply OR a delete); drift detection stays the List-based
+  path below. Holds no object cache (the leanest mode).
+- `off`: poll-only — today's original behavior.
+
+The default is `cache`: it was measured (`bench/`, 15 ns × 18 resources) to
+match `trigger` on RSS (≈16 MiB self, far under the 50 MiB budget) while
+removing the per-pass `List` apiserver load. The watched-GVK set is rebuilt
+(diffed) after every successful pass from the manifests just parsed, so streams
+for kinds that leave Git are dropped and new kinds get streams without churning
+stable streams. A watch-triggered reconcile goes through the identical
+`run_once -> reconcile -> lock::acquire` path, so the Lease serialization is
+unchanged.
 
 `drift::detect`:
 
@@ -443,8 +462,11 @@ Implementation caveats (the memory strategy that keeps RSS minimal — all
 subject to the correctness-first invariant above; the reconcile Lease in
 `lock.rs` is the one deliberate structural cost accepted in its name):
 
-- No `kube-rs` informer/cache; no `Watch`; no DB or global index — each
-  interaction is a direct `List`/`Get`/`Patch`/`Delete`.
+- Watch is now used (`watch.rs`) as a cluster-side-drift trigger (default
+  `--watch-mode=cache`). In `trigger` mode it holds no object cache; in `cache`
+  mode it holds a per-GVK reflector `Store` (measured to stay under budget).
+  Outside the watch drivers, every interaction is still a direct
+  `List`/`Get`/`Patch`/`Delete` — there is no DB or global index.
 - No persistent cache across passes — each reconcile is self-contained,
   re-discovering what it needs and discarding it.
 - No global or background caches; intermediate data is scoped to a single

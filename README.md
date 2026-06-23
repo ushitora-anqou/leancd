@@ -70,6 +70,8 @@ Key flags:
 | `--branch` | `LEANCD_BRANCH` | main | branch to track |
 | `--path` | `LEANCD_PATH` | . | glob patterns of manifest directories (recursive; repeatable; comma-separated via env, e.g. `live/*/prod`) |
 | `--poll-interval` | `LEANCD_POLL_INTERVAL` | 60s | reconciliation interval |
+| `--watch-mode` | `LEANCD_WATCH_MODE` | cache | how cluster-side drift wakes the loop: `off` (poll only), `trigger` (watch poke, List drift-check), or `cache` (watch + Store cache, no per-pass List) |
+| `--watch-debounce` | `LEANCD_WATCH_DEBOUNCE` | 500ms | collapses a burst of watch events into one reconcile pass |
 | `--hook-timeout-secs` | `LEANCD_HOOK_TIMEOUT_SECS` | 300 | per-hook (Job/Pod) completion timeout before it is treated as failed |
 | `--backoff-base` | `LEANCD_BACKOFF_BASE` | 5s | base delay for exponential backoff on consecutive sync failures |
 | `--backoff-max` | `LEANCD_BACKOFF_MAX` | 10m | maximum backoff delay (resets to poll-interval on success) |

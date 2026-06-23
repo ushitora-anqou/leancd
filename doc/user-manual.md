@@ -252,6 +252,8 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 | `--health-stale-factor` | `LEANCD_HEALTH_STALE_FACTOR` | `10` | all | `leancd health` reports stale when the last sync is older than `poll_interval × this` |
 | `--lock-lease-duration-secs` | `LEANCD_LOCK_LEASE_DURATION_SECS` | `60` | all | reconcile-exclusion Lease lifetime (s); a crashed holder's lease is reclaimed after this. Concurrent `controller`/`sync` passes are serialized via a Lease so only one runs at a time. |
 | `--lock-wait-timeout-secs` | `LEANCD_LOCK_WAIT_TIMEOUT_SECS` | `30` | all | seconds to wait for the reconcile Lease when another pass holds it before skipping with a "busy" INFO log (not an error) |
+| `--watch-mode` | `LEANCD_WATCH_MODE` | `cache` | controller | how cluster-side drift wakes the loop: `off` (periodic poll only), `trigger` (a `watcher` per managed GVK pokes the loop on any change; drift checked via `List`), or `cache` (a `watcher` + reflector `Store` per GVK; drift read from the Store, so no per-pass `List`). Default `cache`: measured (`bench/`) to match `trigger` on RSS while removing per-pass `List` apiserver load. |
+| `--watch-debounce` | `LEANCD_WATCH_DEBOUNCE` | `500ms` | controller | collapses a burst of watch events (a reconnect `InitApply` burst, or a rapid edit storm) into one reconcile pass |
 
 `--poll-interval` and `--git-*-env` are accepted by all subcommands (they are
 part of `CommonArgs`) but only `controller` uses `--poll-interval` in a
