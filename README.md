@@ -127,14 +127,17 @@ For a hands-on walkthrough deploying Lean CD into a local `kind` cluster
 
 ## How it keeps memory low
 
-Lean CD never builds an informer/cache of the cluster: every reconciliation
-issues direct `List`/`Get`/`Patch` calls for exactly the resources declared in
-Git. Git history is kept shallow (depth 1), YAML is parsed one document at a
-time, runtime state is a single ConfigMap plus a managed-by label, and the
-runtime is single-threaded (`tokio` `current_thread`). There is no
-cluster-wide cache and no background state: each pass fetches only what it needs
-via direct `List`/`Get`/`Patch` calls and discards it, which keeps the footprint
-flat regardless of cluster size.
+Lean CD holds no cluster-wide cache: every reconciliation issues direct
+`List`/`Get`/`Patch` calls for exactly the resources declared in Git. In
+`off`/`trigger` `--watch-mode` it holds no object cache at all — each pass
+fetches only what it needs and discards it. The default `cache` mode holds only
+a per-GVK managed-by `Store` (kept shallow by the managed-by label, measured to
+stay well under budget) so steady-state drift-check needs no per-pass `List`;
+it is still not a cluster-wide cache or background store. Git history is kept
+shallow (depth 1), YAML is parsed one document at a time, runtime state is a
+single ConfigMap plus a managed-by label, and the runtime is single-threaded
+(`tokio` `current_thread`), which keeps the footprint flat regardless of cluster
+size.
 
 ## Benchmark
 

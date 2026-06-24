@@ -56,7 +56,7 @@ background state, shallow clones, streaming parses, and a single-threaded runtim
 
 ## 2. Module map
 
-`src/` contains fifteen library modules plus the `main` entry point. `reconcile` is the hub; `kube_util` is the only
+`src/` contains sixteen library modules plus the `main` entry point. `reconcile` is the hub; `kube_util` is the only
 boundary that touches the Kubernetes API; `main` wires the runtime.
 
 | Module | Responsibility |

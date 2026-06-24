@@ -17,7 +17,7 @@
 #
 # Tunables:
 #   BENCH_NAMESPACE_COUNT  number of namespaces to generate (default 15)
-#   RSS_BUDGET_MIB        RSS budget in MiB (default 100)
+#   RSS_BUDGET_MIB        RSS budget in MiB (default 50)
 #   BENCH_SAMPLE_SECS     seconds to sample RSS for peak detection (default 30)
 #   KIND_CLUSTER_NAME     kind cluster name (default leancd-bench)
 set -euo pipefail

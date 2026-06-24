@@ -6,7 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+
+- **Cluster-side drift detection via watch** (`--watch-mode`): Lean CD now
+  watches its managed-by resources so a cluster-side edit (`kubectl`, another
+  controller) wakes the reconcile loop within `--watch-debounce` instead of
+  waiting up to `--poll-interval`. Three modes — `off` (poll only, the previous
+  behavior), `trigger` (a `watcher` per managed GVK pokes the loop; drift is
+  still checked via `List`), and `cache` (default; a `watcher` + reflector
+  `Store` per GVK, drift read from the `Store` with no per-pass `List`). `cache`
+  was chosen as default: measured (`bench/`) to match `trigger` on RSS (≈16 MiB
+  self at 15 ns × 18 resources) while removing the per-pass apiserver `List`
+  load. A watch-triggered reconcile goes through the identical
+  `run_once → reconcile → lock::acquire` path, so the Lease serialization is
+  unchanged.
+- **Cache-bloat benchmark** (`bench/cache-bloat.sh`): stresses the watch `Store`
+  along the two axes that grow it — object count (`scale`) and per-object size
+  (`large-obj`) — plus a create/delete `churn` leak check (idle RSS must not
+  climb across cycles). All gated against `RSS_BUDGET_MIB`;
+  `bench/gen-manifests.sh` shapes the manifest set for either axis.
+
+### Changed
+
+- **RSS budget tightened to 50 MiB** (was 100). The headline gate enforced by
+  `bench/bench.sh` is now `RSS_BUDGET_MIB=50` (default); `bench/scale.sh`
+  continues to forward 100. Lean CD measures ≈16 MiB self RSS at the default
+  scale, so 50 MiB keeps ample headroom while sharpening the regression gate.
 
 ## [0.1.1] - 2026-06-22
 

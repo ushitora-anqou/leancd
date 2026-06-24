@@ -111,7 +111,7 @@ budget breach, so wiring them into such a job catches RSS regressions.
 
 Lean CD runs as a host process against the kind cluster's kubeconfig rather than
 in-cluster. This exercises the exact same reconciliation code paths and memory
-profile; the in-cluster Deployment variant lives in `deploy/`.
+profile; the in-cluster Deployment ships in the Helm chart ([`../charts/leancd/`](../charts/leancd/)).
 
 The **tree** measurement sums RSS across Lean CD and every descendant process it
 spawns (the `git` CLI for fetch/clone/reset, plus any `ssh` it shells out to).

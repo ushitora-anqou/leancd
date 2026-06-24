@@ -513,9 +513,13 @@ Lean CD's series.
 ### 8.1 Poll interval
 
 `--poll-interval` trades responsiveness for API traffic. Lower values detect
-Git changes faster but issue more reconcile passes (each steady-state pass does
-one `List` per managed GVK). The default `60s` is what the RSS benchmark
-validates; if you change it significantly at scale, re-run `make bench`.
+Git changes faster but issue more reconcile passes. Each steady-state pass
+lists live managed resources — one `List` per GVK in `off`/`trigger`
+`--watch-mode`, or a `Store` read (no per-pass `List`) in `cache` (the
+default). Note `cache`/`trigger` modes also wake the loop on a cluster-side
+change within `--watch-debounce`, so `--poll-interval` bounds Git-side
+detection latency, not drift self-heal. The default `60s` is what the RSS
+benchmark validates; if you change it significantly at scale, re-run `make bench`.
 
 ### 8.2 Namespace and multi-tenancy
 

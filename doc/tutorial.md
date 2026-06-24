@@ -218,8 +218,8 @@ kubectl wait -n leancd --for=condition=Available deploy/leancd --timeout=240s
 
 (`config.branch`/`config.path` can be overridden the same way if needed.)
 
-If `wait` times out, check the Pod: `kubectl -n Lean CD describe pod -l
-app.kubernetes.io/name=leancd` and `kubectl -n Lean CD logs deploy/leancd`. The
+If `wait` times out, check the Pod: `kubectl -n leancd describe pod -l
+app.kubernetes.io/name=leancd` and `kubectl -n leancd logs deploy/leancd`. The
 two common causes are a missing image (you skipped `kind load` in step 3) and a
 bad repo URL or missing credentials.
 
