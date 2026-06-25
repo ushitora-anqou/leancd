@@ -25,6 +25,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (`large-obj`) — plus a create/delete `churn` leak check (idle RSS must not
   climb across cycles). All gated against `RSS_BUDGET_MIB`;
   `bench/gen-manifests.sh` shapes the manifest set for either axis.
+- **Resource health assessment** (Argo CD-style): Lean CD now evaluates the
+  health of its managed resources and exposes it as an *independent* signal —
+  sync completion is unchanged (a successful apply still completes a sync). It
+  is a port of Argo CD's built-in per-GVK health checks (`Deployment`,
+  `StatefulSet`, `ReplicaSet`, `DaemonSet`, `Pod`, `Job`, `Service`, `Ingress`,
+  `PVC`, `HPA`, `APIService`, `Workflow`); like Argo CD it does **not** descend
+  `ownerReferences` (a Deployment's health reads its own `.status`, which
+  already aggregates its ReplicaSet/Pod state). The worst status across
+  evaluated resources is persisted in the state ConfigMap, exported as the
+  `leancd_health_status` gauge (by `status`), and shown by `leancd status` /
+  `leancd health`. Live objects are reused from the drift `List`/watch cache —
+  no new resident cache.
+- **`--health-mode`** (`on`/`off`, default `on`; `LEANCD_HEALTH_MODE`): toggles
+  the health assessment. `off` skips it and its metric (sync completion is
+  unaffected either way).
+- **Health-heavy benchmark** (`bench/health-heavy.sh`): stresses health
+  assessment at a larger Deployment→ReplicaSet→Pod fan-out and namespace count
+  than the default bench (`HEALTH_HEAVY_NS`, `HEALTH_HEAVY_REPLICAS`), health
+  mode `on`, gated against `RSS_BUDGET_MIB`. `bench/gen-manifests.sh` gains
+  `BENCH_DEP_REPLICAS` to scale the Pod fan-out per Deployment.
 
 ### Changed
 

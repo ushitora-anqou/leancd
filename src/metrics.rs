@@ -24,6 +24,9 @@ struct MetricsState {
     managed_resources: i64,
     /// (group, version, kind) -> number of drifted resources for that GVK.
     drift_per_gvk: HashMap<(String, String, String), i64>,
+    /// health-status spelling -> number of managed resources in that status
+    /// (e.g. "Healthy" -> 5, "Progressing" -> 1).
+    health_per_status: HashMap<String, i64>,
 }
 
 /// Container for Lean CD's OpenTelemetry instruments.
@@ -39,7 +42,7 @@ pub struct Metrics {
     pub sync_errors: Counter<u64>,
     pub hooks_total: Counter<u64>,
     state: Arc<Mutex<MetricsState>>,
-    _gauges: [ObservableGauge<i64>; 4],
+    _gauges: [ObservableGauge<i64>; 5],
 }
 
 impl Metrics {
@@ -108,12 +111,26 @@ impl Metrics {
             })
             .build();
 
+        let st = state.clone();
+        let health = meter
+            .i64_observable_gauge("leancd_health_status")
+            .with_description(
+                "Managed resources by resource-health status (Argo CD-style health assessment)",
+            )
+            .with_callback(move |o| {
+                let s = st.lock().unwrap();
+                for (status, count) in s.health_per_status.iter() {
+                    o.observe(*count, &[KeyValue::new("status", status.clone())]);
+                }
+            })
+            .build();
+
         Self {
             sync_total,
             sync_errors,
             hooks_total,
             state,
-            _gauges: [last_success, managed, rss, drift],
+            _gauges: [last_success, managed, rss, drift, health],
         }
     }
 
@@ -162,6 +179,21 @@ impl Metrics {
             (group.to_string(), version.to_string(), kind.to_string()),
             n,
         );
+    }
+
+    /// Clear all health-status counts (resolved states disappear next pass).
+    pub fn reset_health(&self) {
+        self.state.lock().unwrap().health_per_status.clear();
+    }
+
+    /// Set the managed-resource count for one health status (e.g. "Healthy",
+    /// "Progressing", "Degraded", "Suspended", "Missing", "Unknown").
+    pub fn set_health(&self, status: &str, n: i64) {
+        self.state
+            .lock()
+            .unwrap()
+            .health_per_status
+            .insert(status.to_string(), n);
     }
 }
 
@@ -331,6 +363,59 @@ mod tests {
         for scope in &rm.scope_metrics {
             for metric in &scope.metrics {
                 if metric.name.as_ref() == "leancd_drift_detected" {
+                    let data = metric
+                        .data
+                        .as_any()
+                        .downcast_ref::<Gauge<i64>>()
+                        .expect("gauge data");
+                    assert!(data.data_points.is_empty(), "reset did not clear series");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn health_status_records_per_status() {
+        let rm = collect_after(|m| {
+            m.set_health("Healthy", 3);
+            m.set_health("Progressing", 1);
+        });
+
+        let mut found = 0;
+        for scope in &rm.scope_metrics {
+            for metric in &scope.metrics {
+                if metric.name.as_ref() == "leancd_health_status" {
+                    let data = metric
+                        .data
+                        .as_any()
+                        .downcast_ref::<Gauge<i64>>()
+                        .expect("gauge data");
+                    assert_eq!(data.data_points.len(), 2, "expected two status series");
+                    for dp in &data.data_points {
+                        let s = str_attr(&dp.attributes, "status");
+                        match s.as_str() {
+                            "Healthy" => assert_eq!(dp.value, 3),
+                            "Progressing" => assert_eq!(dp.value, 1),
+                            other => panic!("unexpected status {other:?}"),
+                        }
+                        found += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(found, 2, "health metric not collected");
+    }
+
+    #[test]
+    fn health_status_reset_clears_values() {
+        let rm = collect_after(|m| {
+            m.set_health("Healthy", 3);
+            m.reset_health();
+        });
+
+        for scope in &rm.scope_metrics {
+            for metric in &scope.metrics {
+                if metric.name.as_ref() == "leancd_health_status" {
                     let data = metric
                         .data
                         .as_any()

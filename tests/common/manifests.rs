@@ -159,3 +159,29 @@ pub fn statefulset(name: &str, ns: &str, image: &str, replicas: u32) -> String {
     s.push_str("  volumeClaimTemplates:\n    - metadata:\n        name: data\n      spec:\n        accessModes: [\"ReadWriteOnce\"]\n        resources:\n          requests:\n            storage: 1Gi\n");
     s
 }
+
+/// A namespaced Deployment running `image` with `replicas` replicas. The
+/// Deployment controller creates the ReplicaSet and Pods in-cluster (the
+/// ownerReference chain whose aggregate state health assessment reads via the
+/// Deployment's `.status`). Drift/prune only need the spec to apply.
+pub fn deployment(name: &str, ns: &str, image: &str, replicas: u32) -> String {
+    let mut s = String::new();
+    s.push_str("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n");
+    s.push_str(&format!("  name: {name}\n"));
+    if !ns.is_empty() {
+        s.push_str(&format!("  namespace: {ns}\n"));
+    }
+    s.push_str("spec:\n");
+    s.push_str(&format!("  replicas: {replicas}\n"));
+    s.push_str(&format!(
+        "  selector:\n    matchLabels:\n      app: \"{name}\"\n"
+    ));
+    s.push_str(&format!(
+        "  template:\n    metadata:\n      labels:\n        app: \"{name}\"\n"
+    ));
+    s.push_str("    spec:\n      containers:\n");
+    s.push_str(&format!(
+        "        - name: app\n          image: \"{image}\"\n          imagePullPolicy: IfNotPresent\n"
+    ));
+    s
+}

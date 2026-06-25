@@ -15,9 +15,14 @@ OUT="${2:-manifests}"
 mkdir -p "$OUT"
 
 # Per-namespace workload composition (the "heavy" profile). Each is overridable
-# via env (BENCH_DEP_PER_NS / BENCH_STS_PER_NS / BENCH_CM_PER_NS /
-# BENCH_SVC_PER_NS) so the cache-bloat scenarios can scale object counts.
+# via env (BENCH_DEP_PER_NS / BENCH_DEP_REPLICAS / BENCH_STS_PER_NS /
+# BENCH_CM_PER_NS / BENCH_SVC_PER_NS) so the cache-bloat and health-heavy
+# scenarios can scale object counts and per-Deployment Pod fan-out.
 DEP_PER_NS="${BENCH_DEP_PER_NS:-5}"
+# Replicas per Deployment: scales the ReplicaSet->Pod fan-out (the
+# ownerReference chain) whose aggregate state is read each pass via the
+# Deployment's .status during health assessment.
+DEP_REPLICAS="${BENCH_DEP_REPLICAS:-2}"
 STS_PER_NS="${BENCH_STS_PER_NS:-2}"
 CM_PER_NS="${BENCH_CM_PER_NS:-8}"
 SVC_PER_NS="${BENCH_SVC_PER_NS:-3}"
@@ -47,7 +52,7 @@ metadata:
   name: app-deploy-$i
   namespace: $ns
 spec:
-  replicas: 2
+  replicas: $DEP_REPLICAS
   selector:
     matchLabels:
       app: app-deploy-$i

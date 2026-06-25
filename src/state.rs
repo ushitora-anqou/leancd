@@ -15,6 +15,30 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::prune::ResourceKey;
 
+/// Aggregate resource-health summary persisted in the state ConfigMap. Mirrors
+/// Argo CD's "application health = worst managed-resource health" (see
+/// `resource_health.rs`, a port of `gitops-engine/pkg/health`). Stores only the
+/// worst status string and per-status counts — never per-resource bodies — so it
+/// stays well within the 1MiB ConfigMap limit regardless of scale. `worst` is
+/// `None` until the first health assessment runs, or when no managed resource
+/// has a built-in health check (e.g. a repo of only ConfigMaps).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HealthSummary {
+    /// Worst status across evaluated managed resources (`"Healthy"`,
+    /// `"Progressing"`, `"Degraded"`, `"Suspended"`, `"Missing"`, `"Unknown"`),
+    /// or `None` if none were evaluated.
+    pub worst: Option<String>,
+    /// Message from the worst resource — why it is not Healthy (e.g. a rollout
+    /// or progress-deadline reason). `None` iff `worst` is `None`.
+    pub worst_message: Option<String>,
+    pub healthy: usize,
+    pub progressing: usize,
+    pub degraded: usize,
+    pub suspended: usize,
+    pub missing: usize,
+    pub unknown: usize,
+}
+
 /// Persisted sync state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct State {
@@ -25,6 +49,11 @@ pub struct State {
     pub drift_count: usize,
     pub managed_count: usize,
     pub applied: Vec<ResourceKey>,
+    /// Aggregate resource-health summary: the worst health across managed
+    /// resources with a built-in health check, plus per-status counts.
+    /// Populated by `reconcile`'s health assessment; default (all-zero,
+    /// `worst = None`) until the first pass evaluates health.
+    pub health: HealthSummary,
 }
 
 impl State {
@@ -112,6 +141,12 @@ mod tests {
                 key("apps", "Deployment", "d", Some("default")),
                 key("", "ConfigMap", "c", None),
             ],
+            health: HealthSummary {
+                worst: Some("Progressing".into()),
+                worst_message: Some("Waiting for rollout to finish".into()),
+                progressing: 2,
+                ..Default::default()
+            },
         };
         let back = State::from_data(Some(&s.to_data()));
         assert_eq!(back.last_sha.as_deref(), Some("abc123"));
@@ -124,6 +159,12 @@ mod tests {
         assert_eq!(back.applied[0].name, "d");
         assert_eq!(back.applied[0].namespace.as_deref(), Some("default"));
         assert!(back.applied[1].namespace.is_none());
+        assert_eq!(back.health.worst.as_deref(), Some("Progressing"));
+        assert_eq!(back.health.progressing, 2);
+        assert_eq!(
+            back.health.worst_message.as_deref(),
+            Some("Waiting for rollout to finish")
+        );
     }
 
     #[test]

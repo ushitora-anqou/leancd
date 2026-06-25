@@ -144,6 +144,12 @@ pub struct CommonArgs {
     /// caching entirely (all LargeTier).
     #[arg(long, env = "LEANCD_CACHE_MAX_OBJECT_BYTES", default_value = "12288")]
     pub cache_max_object_bytes: usize,
+
+    /// Whether to evaluate and publish resource health: `on` (default) runs the
+    /// Argo CD-style health assessment each pass; `off` skips it (and its
+    /// metric). Sync completion is unaffected — health is an independent signal.
+    #[arg(long, env = "LEANCD_HEALTH_MODE", default_value = "on")]
+    pub health_mode: String,
 }
 
 impl CommonArgs {
@@ -178,6 +184,7 @@ impl CommonArgs {
             watch_mode: crate::watch::WatchMode::parse(&self.watch_mode)?,
             watch_debounce: parse_duration(&self.watch_debounce)?,
             cache_max_object_bytes: self.cache_max_object_bytes,
+            health_enabled: self.health_mode.eq_ignore_ascii_case("on"),
         })
     }
 }
@@ -211,6 +218,7 @@ mod tests {
             watch_mode: "off".into(),
             watch_debounce: "500ms".into(),
             cache_max_object_bytes: 12288,
+            health_mode: "on".into(),
         }
     }
 

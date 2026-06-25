@@ -31,7 +31,7 @@ pub async fn detect(
     client: &kube::client::Client,
     manifests: &[RawManifest],
     cfg: &Config,
-) -> Result<Vec<DriftItem>> {
+) -> Result<(Vec<DriftItem>, Vec<DynamicObject>)> {
     // Collect the distinct GVKs to list (insertion order does not matter here).
     let mut gvks: HashMap<(String, String, String), ()> = HashMap::new();
     for m in manifests {
@@ -67,8 +67,45 @@ pub async fn detect(
     for (gvk, objs) in &lists {
         live_by_gvk.insert(gvk.clone(), objs.iter().collect());
     }
+    let drifts = compute_drifts(manifests, &live_by_gvk);
 
-    Ok(compute_drifts(manifests, &live_by_gvk))
+    // Flatten the live objects across managed GVKs so callers (health
+    // assessment) can match them against manifests without a second List.
+    let live: Vec<DynamicObject> = lists.into_values().flatten().collect();
+    Ok((drifts, live))
+}
+
+/// Collect the live objects for every managed GVK (one `List` per kind, label-
+/// filtered), without computing drift. Used by the health-assessment path on a
+/// full-apply pass (where drift is not computed) so health reuses the same
+/// `List` shape as [`detect`].
+pub async fn collect_live(
+    client: &kube::client::Client,
+    manifests: &[RawManifest],
+    cfg: &Config,
+) -> Result<Vec<DynamicObject>> {
+    let mut gvks: HashMap<(String, String, String), ()> = HashMap::new();
+    for m in manifests {
+        gvks.entry(m.gvk()).or_insert(());
+    }
+    let label_sel = format!("{}={}", cfg.managed_label_key, cfg.managed_label_value);
+    let mut live: Vec<DynamicObject> = Vec::new();
+    for (group, version, kind) in gvks.into_keys() {
+        let (ar, _caps) = match kube_util::resolve(client, &group, &version, &kind).await {
+            Ok(x) => x,
+            Err(e) => {
+                tracing::warn!(error = %e, gvk = ?(&group, &version, &kind), "health: discovery failed");
+                continue;
+            }
+        };
+        match kube_util::list_all(client, &ar, Some(&label_sel)).await {
+            Ok(l) => live.extend(l),
+            Err(e) => {
+                tracing::warn!(error = %e, gvk = ?(&group, &version, &kind), "health: list failed");
+            }
+        }
+    }
+    Ok(live)
 }
 
 /// Compare desired manifests against live objects (grouped by GVK) and return
@@ -202,10 +239,21 @@ pub async fn detect_from_lw(
     manifests: &[RawManifest],
     stores: &HashMap<(String, String, String), Arc<Mutex<LightweightStore>>>,
     cfg: &Config,
-) -> Result<Vec<DriftItem>> {
+) -> Result<(Vec<DriftItem>, Vec<DynamicObject>)> {
     let (mut drifts, large_by_gvk) = drift_from_cache(manifests, stores);
+
+    // Small-tier live objects come straight from the cache (cloned) so health
+    // assessment can match them without a List; large-tier objects are appended
+    // from the List fallback below.
+    let mut live: Vec<DynamicObject> = Vec::new();
+    for store in stores.values() {
+        if let Ok(guard) = store.lock() {
+            live.extend(guard.small_values().cloned());
+        }
+    }
+
     if large_by_gvk.is_empty() {
-        return Ok(drifts);
+        return Ok((drifts, live));
     }
 
     let label_sel = format!("{}={}", cfg.managed_label_key, cfg.managed_label_value);
@@ -222,14 +270,14 @@ pub async fn detect_from_lw(
                 continue;
             }
         };
-        let live = match kube_util::list_all(client, &ar, Some(&label_sel)).await {
+        let live_list = match kube_util::list_all(client, &ar, Some(&label_sel)).await {
             Ok(l) => l,
             Err(e) => {
                 tracing::warn!(error = %e, gvk = ?gvk, "drift: large-tier List fallback failed");
                 continue;
             }
         };
-        let live_refs: Vec<&DynamicObject> = live.iter().collect();
+        let live_refs: Vec<&DynamicObject> = live_list.iter().collect();
         for m in ms {
             match find_live_match(m, &live_refs) {
                 None => drifts.push(DriftItem {
@@ -247,9 +295,10 @@ pub async fn detect_from_lw(
                 }
             }
         }
+        live.extend(live_list);
     }
 
-    Ok(drifts)
+    Ok((drifts, live))
 }
 
 /// Find the live object that matches a manifest by name and namespace.

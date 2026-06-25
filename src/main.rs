@@ -13,6 +13,7 @@ mod manifest;
 mod metrics;
 mod prune;
 mod reconcile;
+mod resource_health;
 mod state;
 mod version;
 mod watch;
@@ -185,6 +186,17 @@ async fn run_status(cfg: config::Config) -> Result<()> {
             println!("  sync count: {}", s.sync_count);
             println!("  managed:    {}", s.managed_count);
             println!("  drift:      {}", s.drift_count);
+            println!(
+                "  health:     {} (healthy {} progressing {} degraded {} missing {})",
+                s.health.worst.as_deref().unwrap_or("(none)"),
+                s.health.healthy,
+                s.health.progressing,
+                s.health.degraded,
+                s.health.missing,
+            );
+            if let Some(msg) = s.health.worst_message.as_deref().filter(|m| !m.is_empty()) {
+                println!("              {msg}");
+            }
             if let Some(epoch) = s.last_sync_epoch {
                 println!("  last sync:  unix {epoch}");
             }

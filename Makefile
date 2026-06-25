@@ -1,4 +1,4 @@
-.PHONY: all build test test-unit fmt bench scale e2e release
+.PHONY: all build test test-unit fmt bench scale health-heavy e2e release
 
 all: fmt build test-unit
 
@@ -19,6 +19,11 @@ bench:
 # RSS across increasing scales (requires kind; see bench/scale.sh).
 scale:
 	./bench/scale.sh
+
+# RSS under health-assessment load: many Deployments fanning out to
+# ReplicaSet/Pod children with health ON (requires kind; see bench/health-heavy.sh).
+health-heavy:
+	./bench/health-heavy.sh
 
 # End-to-end tests against a kind cluster with an in-cluster Forgejo and
 # leancd (requires docker, kind, kubectl, git, curl). Not part of nix flake

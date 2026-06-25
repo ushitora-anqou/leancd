@@ -73,7 +73,16 @@ pub async fn run_health(cfg: &Config) -> Result<HealthStatus> {
         .poll_interval
         .as_secs()
         .saturating_mul(u64::from(cfg.health_stale_factor));
-    Ok(classify_health(state.as_ref(), now, stale_threshold))
+    let status = classify_health(state.as_ref(), now, stale_threshold);
+    // Surface the resource-health worst status (an independent signal) on stdout
+    // for humans; the exit code returned below still reflects sync freshness for
+    // the exec probe.
+    if let Some(s) = state.as_ref() {
+        if let Some(worst) = s.health.worst.as_deref() {
+            println!("resource health: {worst}");
+        }
+    }
+    Ok(status)
 }
 
 #[cfg(test)]

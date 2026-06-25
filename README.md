@@ -27,9 +27,17 @@ by an automated benchmark (see [bench/](bench/)).
 - Backs off exponentially on consecutive sync failures and shuts down gracefully
   (finishing the in-flight pass on SIGTERM); `SIGHUP` reloads `RUST_LOG`.
 - `leancd health` subcommand for `exec` liveness/readiness probes.
+- **Resource health assessment** (Argo CD-style): evaluates the health of
+  managed resources each pass and surfaces the worst status in `leancd status`
+  and `leancd health`, plus the `leancd_health_status` metric. A sync still
+  completes on a successful apply — health is an independent signal, and like
+  Argo CD it does not descend `ownerReferences` (a Deployment's health reads its
+  own `.status`, which already aggregates its ReplicaSet/Pod state). Toggle with
+  `--health-mode`.
 - `leancd --version` and the startup log report the embedded git SHA.
-- Metrics exported over OTLP/HTTP (push), including `leancd_rss_bytes`; a ready
-  Grafana dashboard ships in the chart ([`charts/leancd/dashboards/`](charts/leancd/dashboards/)).
+- Metrics exported over OTLP/HTTP (push), including `leancd_rss_bytes` and
+  `leancd_health_status`; a ready Grafana dashboard ships in the chart
+  ([`charts/leancd/dashboards/`](charts/leancd/dashboards/)).
 - Handles **all** resource kinds, including CRDs and cluster-scoped resources.
 
 ## Non-goals (kept out to stay small and light)
@@ -77,6 +85,7 @@ Key flags:
 | `--backoff-base` | `LEANCD_BACKOFF_BASE` | 5s | base delay for exponential backoff on consecutive sync failures |
 | `--backoff-max` | `LEANCD_BACKOFF_MAX` | 10m | maximum backoff delay (resets to poll-interval on success) |
 | `--shutdown-timeout-secs` | `LEANCD_SHUTDOWN_TIMEOUT_SECS` | 28 | grace period for the in-flight pass on SIGTERM (≤ Pod terminationGracePeriodSeconds) |
+| `--health-mode` | `LEANCD_HEALTH_MODE` | on | `on` evaluates and publishes resource health each pass; `off` skips it and its metric (sync completion is unaffected — health is an independent signal) |
 | `--health-stale-factor` | `LEANCD_HEALTH_STALE_FACTOR` | 10 | `leancd health` reports stale when the last sync is older than poll-interval × this |
 | `--lock-lease-duration-secs` | `LEANCD_LOCK_LEASE_DURATION_SECS` | 60 | reconcile-exclusion Lease lifetime (s); concurrent controller+sync passes are serialized via a Lease (one at a time) |
 | `--lock-wait-timeout-secs` | `LEANCD_LOCK_WAIT_TIMEOUT_SECS` | 30 | seconds to wait for the reconcile Lease when another pass holds it before skipping with a "busy" INFO log (not an error) |
@@ -145,6 +154,7 @@ size.
 ```sh
 make bench        # or: ./bench/bench.sh   — single run
 make scale        # or: ./bench/scale.sh   — RSS across 8/15/20 namespaces
+make health-heavy # or: ./bench/health-heavy.sh — RSS under health-assessment load (Deployments fanning out to Pods, health ON)
 ```
 
 `bench` samples RSS from startup through steady state and asserts both the sync

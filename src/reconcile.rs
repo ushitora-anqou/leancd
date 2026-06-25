@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kube::client::Client;
+use kube::core::DynamicObject;
 use rand::Rng;
 use tokio::sync::Notify;
 
@@ -21,7 +22,7 @@ use crate::lock;
 use crate::manifest::{self, RawManifest};
 use crate::metrics::Metrics;
 use crate::watch;
-use crate::{drift, prune, state};
+use crate::{drift, prune, resource_health, state};
 
 /// Drives a single repository-sync target.
 pub struct Reconciler {
@@ -147,6 +148,10 @@ impl Reconciler {
         let mut drifts: Vec<drift::DriftItem> = Vec::new();
         let mut post_error: Option<String> = None;
         let mut pruned = 0usize;
+        // Live objects for the health assessment; populated on every pass that
+        // evaluates health (reused from the drift List, or a dedicated collect
+        // on a full-apply pass).
+        let mut health_live: Vec<DynamicObject> = Vec::new();
 
         if teardown {
             // pre-delete hooks; abort (skip the prune) on failure.
@@ -183,7 +188,12 @@ impl Reconciler {
             if let Some((_, reason)) = pre.failures.first() {
                 return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
             }
-            self.apply_all(classified.main).await?;
+            self.apply_all(&classified.main).await?;
+            if self.cfg.health_enabled {
+                health_live = drift::collect_live(&self.client, &classified.main, &self.cfg)
+                    .await
+                    .unwrap_or_default();
+            }
             let post = self
                 .hook_phase(
                     guard,
@@ -198,7 +208,7 @@ impl Reconciler {
         } else {
             // Cache mode drift-checks against the watch-backed Store (no List);
             // Trigger/Off modes List live objects as before.
-            drifts = if self.cfg.watch_mode == watch::WatchMode::Cache {
+            let (d, l) = if self.cfg.watch_mode == watch::WatchMode::Cache {
                 let stores = self
                     .cache_stores
                     .lock()
@@ -208,6 +218,8 @@ impl Reconciler {
             } else {
                 drift::detect(&self.client, &classified.main, &self.cfg).await?
             };
+            drifts = d;
+            health_live = l;
             for d in &drifts {
                 tracing::warn!(key = ?d.key, reason = %d.reason, "drift detected");
             }
@@ -224,7 +236,7 @@ impl Reconciler {
                 if let Some((_, reason)) = pre.failures.first() {
                     return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
                 }
-                self.apply_all(classified.main).await?;
+                self.apply_all(&classified.main).await?;
                 let post = self
                     .hook_phase(
                         guard,
@@ -247,6 +259,23 @@ impl Reconciler {
         }
         self.touch_lease(guard).await;
 
+        let health_summary = if self.cfg.health_enabled {
+            // cache watch-mode with no driver running (e.g. `leancd sync`'s
+            // one-shot pass) yields an empty store snapshot, so health_live is
+            // empty and every resource would read as Missing. Fall back to a
+            // List so health is still assessed. On the controller path the drift
+            // List / store already filled health_live, so this is a no-op there.
+            let live = if health_live.is_empty() {
+                drift::collect_live(&self.client, &classified.main, &self.cfg)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                health_live
+            };
+            resource_health::assess(&classified.main, &live)
+        } else {
+            state::HealthSummary::default()
+        };
         let mut new_state = prev.clone().unwrap_or_default();
         new_state.last_sha = Some(sync.sha.clone());
         new_state.last_sync_epoch = Some(now_epoch());
@@ -255,6 +284,7 @@ impl Reconciler {
         new_state.drift_count = drift_count;
         new_state.managed_count = current_keys.len();
         new_state.applied = current_keys.clone();
+        new_state.health = health_summary.clone();
         self.touch_lease(guard).await;
         state::write(&self.client, &self.cfg, &new_state).await?;
 
@@ -275,6 +305,21 @@ impl Reconciler {
         for ((group, version, kind), n) in drift_by_gvk {
             self.metrics.set_drift(&group, &version, &kind, n);
         }
+
+        // Resource-health counts (reset first so a cleared status disappears).
+        self.metrics.reset_health();
+        self.metrics
+            .set_health("Healthy", health_summary.healthy as i64);
+        self.metrics
+            .set_health("Progressing", health_summary.progressing as i64);
+        self.metrics
+            .set_health("Degraded", health_summary.degraded as i64);
+        self.metrics
+            .set_health("Suspended", health_summary.suspended as i64);
+        self.metrics
+            .set_health("Missing", health_summary.missing as i64);
+        self.metrics
+            .set_health("Unknown", health_summary.unknown as i64);
 
         // Stash the distinct managed GVKs (extracted before `apply_all` moved
         // `classified.main`) so `run_loop` can rebuild watch streams.
@@ -304,7 +349,7 @@ impl Reconciler {
 
     /// Apply every manifest, sharing one API-discovery lookup per resource kind.
     /// Individual apply failures are logged but do not abort the pass.
-    async fn apply_all(&self, manifests: Vec<RawManifest>) -> Result<()> {
+    async fn apply_all(&self, manifests: &[RawManifest]) -> Result<()> {
         let mut cache = kube_util::DiscoveryCache::new();
         let mut applied = 0usize;
         let mut failed = 0usize;

@@ -98,6 +98,13 @@ pub struct Config {
     /// (no bodies cached; drift is fully List-based). Size-based, not kind-based
     /// — any resource kind can carry a large `data`/`spec`.
     pub cache_max_object_bytes: usize,
+
+    /// Whether to evaluate and publish Argo CD-style resource health (the worst
+    /// status across managed resources with a built-in health check). Defaults
+    /// on; disable to skip the health-assessment pass and the metric. Sync
+    /// completion is unaffected either way (apply success still completes a
+    /// sync) — health is an independent signal.
+    pub health_enabled: bool,
 }
 
 impl Config {
@@ -312,6 +319,7 @@ mod tests {
             watch_mode: crate::watch::WatchMode::Off,
             watch_debounce: std::time::Duration::from_millis(500),
             cache_max_object_bytes: 12288,
+            health_enabled: true,
         }
     }
 

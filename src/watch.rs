@@ -207,6 +207,13 @@ impl LightweightStore {
     pub fn small_get(&self, key: &ObjKey) -> Option<&DynamicObject> {
         self.small.get(key)
     }
+
+    /// Borrow all SmallTier bodies (for health assessment: read `.status`
+    /// straight from the cache without a per-pass `List`). LargeTier bodies are
+    /// not held — callers fall back to a List for those (see `drift.rs`).
+    pub fn small_values(&self) -> impl Iterator<Item = &DynamicObject> {
+        self.small.values()
+    }
 }
 
 /// Build the kube-rs watcher config with the managed-by label selector.

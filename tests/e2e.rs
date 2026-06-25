@@ -1440,6 +1440,70 @@ async fn health_lifecycle() {
     );
 }
 
+/// Scenario: a Deployment's resource health converges to Healthy once its
+/// ReplicaSet/Pods become available. The first sync applies the Deployment (a
+/// full-apply pass); after the controller rolls the Pods out and reports
+/// availability in `.status`, a second pass re-evaluates health and `leancd
+/// status` reports `Healthy`.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn deployment_health_convergence() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("deploy-health");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "deploy.yaml".into(),
+            manifests::deployment("health-deploy", "default", "registry.k8s.io/pause:3.9", 2),
+        )],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+
+    // (1) First sync is a full apply: the Deployment is created.
+    assert!(common::leancd::sync(&args).success, "initial sync failed");
+
+    // (2) Wait for the Deployment controller to roll Pods out and report
+    //     availability in .status (what the health assessment reads).
+    let ready = common::wait::wait_for(
+        || deployment_available("default", "health-deploy", 2),
+        Duration::from_secs(120),
+        Duration::from_millis(500),
+    );
+    assert!(ready, "Deployment did not become available");
+
+    // (3) A second pass (drift-only) re-evaluates health against the now-Ready
+    //     Pods; `leancd status` must converge to Healthy.
+    assert!(common::leancd::sync(&args).success, "second sync failed");
+    let converged = common::wait::wait_for(
+        || status_worst_health(&args).as_deref() == Some("Healthy"),
+        Duration::from_secs(60),
+        Duration::from_millis(1000),
+    );
+    assert!(converged, "health did not converge to Healthy");
+}
+
+/// True when a Deployment reports `availableReplicas == want`.
+fn deployment_available(ns: &str, name: &str, want: i64) -> bool {
+    let d = common::kubectl::get_json(ns, "deployment", name);
+    d["status"]["availableReplicas"].as_i64() == Some(want)
+}
+
+/// The worst resource-health status parsed from `leancd status`'s `health:`
+/// line (e.g. `"Healthy"`). `None` when the line is absent (no state yet).
+fn status_worst_health(args: &[String]) -> Option<String> {
+    let res = common::leancd::status(args);
+    for line in res.stdout.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("health:") {
+            return rest.split_whitespace().next().map(str::to_owned);
+        }
+    }
+    None
+}
+
 /// Scenario: the harness Lean CD Deployment pod runs under Pod Security
 /// Standards "restricted" and is Running. Static assertions on the pod spec
 /// (every restricted field is already set in tests/leancd.yaml).
