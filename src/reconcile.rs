@@ -9,8 +9,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kube::client::Client;
-use kube::core::DynamicObject;
-use kube::runtime::reflector::Store;
 use rand::Rng;
 use tokio::sync::Notify;
 
@@ -40,9 +38,9 @@ pub struct Reconciler {
     pub last_gvks: Arc<Mutex<HashSet<watch::GvkKey>>>,
     /// Cache-mode object stores, snapshotted from the `WatchSet` after each
     /// `rebuild` so `reconcile_inner` can drift-check from the cache instead of
-    /// `List`ing. Empty (and unused) in `Trigger`/`Off` modes. `Store` is
-    /// `Arc`-backed, so cloning is cheap and shares the watch driver's live data.
-    pub cache_stores: Arc<Mutex<HashMap<watch::GvkKey, Store<DynamicObject>>>>,
+    /// `List`ing. Empty (and unused) in `Trigger`/`Off` modes. Each
+    /// `LightweightStore` is behind an `Arc<Mutex>` shared with the watch driver.
+    pub cache_stores: Arc<Mutex<HashMap<watch::GvkKey, Arc<Mutex<watch::LightweightStore>>>>>,
 }
 
 impl Reconciler {
@@ -130,18 +128,16 @@ impl Reconciler {
             patterns = ?self.cfg.path,
             "expanded sync path patterns into directories"
         );
-        let mut manifests = manifest::parse_paths(&roots).await?;
-        for m in &mut manifests {
-            manifest::inject_managed_label(
-                m,
-                &self.cfg.managed_label_key,
-                &self.cfg.managed_label_value,
-            );
-        }
+        let manifests = manifest::parse_paths(&roots).await?;
         let classified = hooks::classify(manifests);
         // Only non-hook ("main") resources are tracked in the applied set; hooks
         // are managed by the hook engine and excluded from prune.
         let current_keys = prune::ResourceKey::keys_of(&classified.main);
+        // Extract the distinct managed GVKs before `apply_all` consumes
+        // `classified.main` (moved into apply), so `run_loop` can rebuild the
+        // watch streams between passes.
+        let managed_gvks: HashSet<watch::GvkKey> =
+            classified.main.iter().map(|m| m.gvk()).collect();
 
         let do_full = should_full_apply(prev.is_some(), sync.changed);
         // A full teardown: every main resource has left Git while Lean CD still
@@ -187,7 +183,7 @@ impl Reconciler {
             if let Some((_, reason)) = pre.failures.first() {
                 return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
             }
-            self.apply_all(&classified.main).await?;
+            self.apply_all(classified.main).await?;
             let post = self
                 .hook_phase(
                     guard,
@@ -208,7 +204,7 @@ impl Reconciler {
                     .lock()
                     .map(|s| s.clone())
                     .unwrap_or_default();
-                drift::detect_from_stores(&classified.main, &stores)
+                drift::detect_from_lw(&self.client, &classified.main, &stores, &self.cfg).await?
             } else {
                 drift::detect(&self.client, &classified.main, &self.cfg).await?
             };
@@ -228,7 +224,7 @@ impl Reconciler {
                 if let Some((_, reason)) = pre.failures.first() {
                     return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
                 }
-                self.apply_all(&classified.main).await?;
+                self.apply_all(classified.main).await?;
                 let post = self
                     .hook_phase(
                         guard,
@@ -280,10 +276,8 @@ impl Reconciler {
             self.metrics.set_drift(&group, &version, &kind, n);
         }
 
-        // Stash the distinct managed GVKs so `run_loop` can rebuild the watch
-        // streams between passes (a diff against the running set).
-        let managed_gvks: HashSet<watch::GvkKey> =
-            classified.main.iter().map(|m| m.gvk()).collect();
+        // Stash the distinct managed GVKs (extracted before `apply_all` moved
+        // `classified.main`) so `run_loop` can rebuild watch streams.
         if let Ok(mut g) = self.last_gvks.lock() {
             *g = managed_gvks;
         }
@@ -310,7 +304,7 @@ impl Reconciler {
 
     /// Apply every manifest, sharing one API-discovery lookup per resource kind.
     /// Individual apply failures are logged but do not abort the pass.
-    async fn apply_all(&self, manifests: &[RawManifest]) -> Result<()> {
+    async fn apply_all(&self, manifests: Vec<RawManifest>) -> Result<()> {
         let mut cache = kube_util::DiscoveryCache::new();
         let mut applied = 0usize;
         let mut failed = 0usize;
@@ -327,12 +321,19 @@ impl Reconciler {
                     continue;
                 }
             };
+            let mut value: serde_json::Value = serde_yaml::from_slice(&m.data)
+                .map_err(|e| Error::Manifest(format!("failed to parse manifest: {e}")))?;
+            manifest::inject_managed_label_value(
+                &mut value,
+                &self.cfg.managed_label_key,
+                &self.cfg.managed_label_value,
+            );
             match kube_util::apply(
                 &self.client,
                 &ar,
                 &caps.scope,
                 &self.cfg.namespace,
-                &m.data,
+                value,
                 &self.cfg.field_manager,
             )
             .await
@@ -395,6 +396,7 @@ impl Reconciler {
                 self.cfg.watch_mode,
                 self.stop.clone(),
                 notify.clone(),
+                self.cfg.cache_max_object_bytes,
             ))
         };
 

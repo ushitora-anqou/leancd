@@ -227,7 +227,10 @@ mod tests {
             kind: kind.to_string(),
             name: name.to_string(),
             namespace: namespace.map(String::from),
-            data: serde_json::json!({}),
+            data: serde_yaml::to_string(&serde_json::json!({}))
+                .unwrap()
+                .into_bytes(),
+            annotations: std::collections::BTreeMap::new(),
         }
     }
 

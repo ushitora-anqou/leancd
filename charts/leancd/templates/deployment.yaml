@@ -47,6 +47,11 @@ spec:
               value: {{ .Values.config.lockLeaseDurationSecs | quote }}
             - name: LEANCD_LOCK_WAIT_TIMEOUT_SECS
               value: {{ .Values.config.lockWaitTimeoutSecs | quote }}
+            # In `cache` watch mode, max serialized bytes of an object cached in
+            # full (SmallTier); larger objects are tracked by key only and
+            # drift-checked via a per-GVK List. Size-based, any kind. See watch.rs.
+            - name: LEANCD_CACHE_MAX_OBJECT_BYTES
+              value: {{ .Values.config.cacheMaxObjectBytes | quote }}
             # --- metrics: OTLP/HTTP push to an OpenTelemetry Collector ---
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.metrics.otlpEndpoint | quote }}

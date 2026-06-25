@@ -71,7 +71,7 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | `hooks.rs` | Helm-hook classification + execution (Argo CD-equivalent phases, weights, delete-policy, Job/Pod completion wait) |
 | `reconcile.rs` | The `Reconciler` engine shared by `controller` and `sync` |
 | `lock.rs` | Reconcile-pass mutual exclusion via a `coordination.k8s.io/v1` Lease (one pass at a time, cluster-wide); stale-lease reclaim |
-| `watch.rs` | Optional watch trigger (`--watch-mode`): per-GVK `watcher`/`reflector` drivers that wake `run_loop` on a cluster-side change, collapsing drift-detection latency below `poll_interval` |
+| `watch.rs` | Optional watch trigger (`--watch-mode`): per-GVK `watcher` drivers (consumed directly, no reflector) that wake `run_loop` on a cluster-side change, collapsing drift-detection latency below `poll_interval`; in `cache` mode each driver maintains a size-bounded `LightweightStore` |
 | `drift.rs` | Per-GVK `List` (or `Store` read in cache mode) + subset comparison for drift detection |
 | `prune.rs` | Two-signal deletion of resources removed from Git; honors `resource-policy: keep` and Helm hooks |
 | `state.rs` | Single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
@@ -464,8 +464,12 @@ subject to the correctness-first invariant above; the reconcile Lease in
 
 - Watch is now used (`watch.rs`) as a cluster-side-drift trigger (default
   `--watch-mode=cache`). In `trigger` mode it holds no object cache; in `cache`
-  mode it holds a per-GVK reflector `Store` (measured to stay under budget).
-  Outside the watch drivers, every interaction is still a direct
+  mode it holds a per-GVK size-bounded `LightweightStore` (replacing the old
+  reflector `Store`): objects ≤ `--cache-max-object-bytes` are cached in full
+  (SmallTier) for a no-`List` drift check, while larger objects are tracked by
+  key only (LargeTier) and drift-checked via a per-GVK `List` fallback. The
+  cache's RSS therefore does not grow with per-object payload size, for any
+  resource kind. Outside the watch drivers, every interaction is still a direct
   `List`/`Get`/`Patch`/`Delete` — there is no DB or global index.
 - No persistent cache across passes — each reconcile is self-contained,
   re-discovering what it needs and discarding it.

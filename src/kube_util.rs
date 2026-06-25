@@ -89,10 +89,10 @@ pub async fn apply(
     ar: &ApiResource,
     scope: &Scope,
     default_namespace: &str,
-    manifest: &serde_json::Value,
+    manifest: serde_json::Value,
     field_manager: &str,
 ) -> Result<DynamicObject> {
-    let obj: DynamicObject = serde_json::from_value(manifest.clone()).map_err(|e| {
+    let obj: DynamicObject = serde_json::from_value(manifest).map_err(|e| {
         Error::Manifest(format!("failed to build DynamicObject from manifest: {e}"))
     })?;
     let name = obj

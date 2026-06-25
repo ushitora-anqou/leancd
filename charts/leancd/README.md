@@ -63,6 +63,7 @@ listener — metrics reach Grafana via the OTLP collector set with
 | `config.repoUrl` | `https://github.com/example/manifests.git` | Git repository to sync (override me) |
 | `config.branch` / `config.path` | `main` / `.` | Branch and path globs to sync |
 | `config.pollInterval` | `60s` | Reconcile poll interval |
+| `config.cacheMaxObjectBytes` | `12288` | In `cache` watch mode, max serialized bytes of an object cached in full; larger → key-only + per-GVK List drift fallback. Size-based, any kind |
 | `metrics.otlpEndpoint` | `http://otel-collector:4318` | OTLP/HTTP collector endpoint (bring your own collector) |
 | `rbac.namespaced` | `false` | Bind permissions to the namespace only (+ NetworkPolicy) |
 | `dashboards.enabled` | `true` | Ship the Grafana dashboard ConfigMap |

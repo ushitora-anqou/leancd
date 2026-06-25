@@ -322,12 +322,19 @@ async fn run_one(
         .await;
     }
 
+    let mut value: serde_json::Value = serde_yaml::from_slice(&m.data)
+        .map_err(|e| (key.clone(), format!("failed to parse hook manifest: {e}")))?;
+    crate::manifest::inject_managed_label_value(
+        &mut value,
+        &cfg.managed_label_key,
+        &cfg.managed_label_value,
+    );
     kube_util::apply(
         client,
         &ar,
         &caps.scope,
         &cfg.namespace,
-        &m.data,
+        value,
         &cfg.field_manager,
     )
     .await
@@ -442,11 +449,15 @@ mod tests {
     fn manifest_with(name: &str, group: &str, kind: &str, annos: &[(&str, &str)]) -> RawManifest {
         let mut meta = serde_json::Map::new();
         meta.insert("name".into(), json!(name));
+        let mut annotations = std::collections::BTreeMap::new();
         if !annos.is_empty() {
             let a: serde_json::Map<String, serde_json::Value> = annos
                 .iter()
                 .map(|(k, v)| (k.to_string(), json!(v)))
                 .collect();
+            for (k, v) in annos {
+                annotations.insert((*k).to_string(), (*v).to_string());
+            }
             meta.insert("annotations".into(), Value::Object(a));
         }
         let api_version = if group.is_empty() {
@@ -454,17 +465,21 @@ mod tests {
         } else {
             format!("{group}/v1")
         };
+        let data = serde_yaml::to_string(&json!({
+            "apiVersion": api_version,
+            "kind": kind,
+            "metadata": Value::Object(meta),
+        }))
+        .unwrap()
+        .into_bytes();
         RawManifest {
             group: group.to_string(),
             version: "v1".to_string(),
             kind: kind.to_string(),
             name: name.to_string(),
             namespace: None,
-            data: json!({
-                "apiVersion": api_version,
-                "kind": kind,
-                "metadata": Value::Object(meta),
-            }),
+            data,
+            annotations,
         }
     }
 

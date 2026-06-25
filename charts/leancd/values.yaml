@@ -60,6 +60,7 @@ config:
   workDir: /tmp/leancd-work
   lockLeaseDurationSecs: "60"     # reconcile-pass mutual exclusion (Lease) — see lock.rs
   lockWaitTimeoutSecs: "30"
+  cacheMaxObjectBytes: "12288"    # in `cache` watch mode, max serialized bytes of an object cached in full (SmallTier); larger → key-only (LargeTier) + per-GVK List drift fallback. Size-based, any kind. See watch.rs.
 
 # --- Metrics (OTEL_* env) ---
 # leancd runs no HTTP listener; it pushes metrics over OTLP/HTTP to a collector

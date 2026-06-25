@@ -87,6 +87,7 @@ the result against `RSS_BUDGET_MIB` (default 50):
 |---|---|---|
 | `scale` | object **count** | many namespaces (default `CACHE_BLOAT_NS=40`) × default per-ns resources |
 | `large-obj` | per-object **size** | large ConfigMap payload (default `CACHE_BLOAT_PAYLOAD=51200` = 50 KiB) |
+| `single-large-file` | **single-file** parse | same large payload but every manifest merged into one multi-doc YAML (`BENCH_MERGE_TO_SINGLE_FILE=1`), exercising one large parse stream vs many small files |
 | `churn` | create/delete **leak** | drives leancd directly and adds/removes a ConfigMap each cycle (default `CACHE_BLOAT_CHURNS=20`); idle RSS must not climb across cycles |
 
 All three run in `--watch-mode=cache`. `scale` and `large-obj` reuse `bench.sh`

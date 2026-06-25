@@ -2051,6 +2051,75 @@ async fn watch_self_heal_fast() {
     common::kubectl::delete(&env.namespace, "lease", &lease);
 }
 
+/// Scenario (watch + lightweight cache): a large ConfigMap (50 KiB payload)
+/// exceeds the cache object-size threshold, so it is tracked by key only
+/// (LargeTier) and drift-checked via a per-GVK `List` fallback. An out-of-band
+/// edit is still detected and self-healed — proving the LargeTier fallback
+/// preserves correctness for oversized objects (any kind, not just ConfigMaps).
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn watch_large_object_list_fallback() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("watch-big");
+    fj.create_repo(&env.repo, false);
+    let big = "x".repeat(50_000);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "cm.yaml".into(),
+            manifests::configmap("big-cm", "default", &[("payload", &big)]),
+        )],
+    );
+    let mut args = env.sync_args(&fj.https_url(&env.repo));
+    args.push("--watch-mode".into());
+    args.push("cache".into());
+    // 50 KiB payload >> 1 KiB threshold → the ConfigMap is LargeTier (key only).
+    args.push("--cache-max-object-bytes".into());
+    args.push("1024".into());
+    // Seed state so the controller's first pass is a drift-check (not a full
+    // apply) and it establishes the watch stream + populates the LargeTier key.
+    assert!(common::leancd::sync(&args).success);
+    assert!(common::kubectl::exists("default", "configmap", "big-cm"));
+
+    // Long-poll controller: a heal within the window can ONLY come from watch.
+    let _ctrl = common::leancd::controller_with_opts("leancd-ctrl-big", args.clone(), "300s");
+
+    // Give the controller one pass to establish the watch stream.
+    common::wait::wait_for(
+        || common::kubectl::exists("default", "configmap", "big-cm"),
+        Duration::from_secs(10),
+        Duration::from_millis(500),
+    );
+
+    // Out-of-band edit drifts the live ConfigMap away from Git.
+    common::kubectl::apply_stdin(&manifests::configmap(
+        "big-cm",
+        "default",
+        &[("payload", "tampered")],
+    ));
+
+    // The watch detects the change; drift is resolved via the LargeTier List
+    // fallback (object too big to cache) and self-healed within seconds.
+    let healed = common::wait::wait_for(
+        || {
+            let cm = common::kubectl::get_json("default", "configmap", "big-cm");
+            cm["data"]["payload"].as_str().map(|s| s.len()) == Some(50_000)
+        },
+        Duration::from_secs(30),
+        Duration::from_millis(500),
+    );
+    assert!(
+        healed,
+        "watch did not self-heal the large drifted ConfigMap within 30s \
+         (LargeTier List fallback)"
+    );
+
+    let lease = format!("{}-reconcile-lock", env.state_cm);
+    common::kubectl::delete(&env.namespace, "lease", &lease);
+}
+
 /// Scenario (watch): a watch-triggered reconcile and a concurrent manual
 /// `leancd sync` overlap; the Lease serializes them, and the cluster converges
 /// with no error recorded in state. Mirrors

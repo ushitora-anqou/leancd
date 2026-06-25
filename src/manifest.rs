@@ -7,7 +7,7 @@
 
 #![allow(deprecated)] // serde_yaml is maintenance-mode but is the stable,
                       // streaming-capable YAML parser we depend on.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -30,9 +30,14 @@ pub struct RawManifest {
     pub name: String,
     /// `metadata.namespace`, if present.
     pub namespace: Option<String>,
-    /// The whole manifest document as a JSON value (with the managed-by label
-    /// injected before apply).
-    pub data: Value,
+    /// The whole manifest document as serialized YAML bytes. The managed-by
+    /// label is injected into a freshly-deserialized `Value` at apply time (not
+    /// held here), so this stays the size of the source YAML rather than a
+    /// heavier `serde_json::Value` tree.
+    pub data: Vec<u8>,
+    /// `metadata.annotations` captured at parse time, so [`annotation`] reads
+    /// from here without re-deserializing the document.
+    pub annotations: BTreeMap<String, String>,
 }
 
 impl RawManifest {
@@ -77,14 +82,29 @@ fn value_to_manifest(value: Value) -> Result<Option<RawManifest>> {
     };
     let namespace = metadata.and_then(|m| m.get("namespace")).and_then(as_str);
 
+    // Capture metadata.annotations for cheap lookups (hook classification etc.).
+    let annotations = metadata
+        .and_then(|m| m.get("annotations"))
+        .and_then(Value::as_object)
+        .map(|a| {
+            a.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+
     let (group, version) = split_api_version(&api_version);
+    let data = serde_yaml::to_string(&value)
+        .map_err(|e| Error::Manifest(format!("failed to serialize manifest: {e}")))?
+        .into_bytes();
     Ok(Some(RawManifest {
         group,
         version,
         kind,
         name,
         namespace,
-        data: value,
+        data,
+        annotations,
     }))
 }
 
@@ -211,19 +231,17 @@ fn collect_yaml_files(dir: &Path) -> Result<Vec<PathBuf>> {
 
 /// Read a single `metadata.annotations` entry from a manifest, or `None` when
 /// the annotation (or `metadata`/`annotations`) is absent or not a string.
+/// Reads from the parse-time `annotations` cache — no deserialization.
 pub fn annotation(m: &RawManifest, key: &str) -> Option<String> {
-    m.data
-        .get("metadata")?
-        .get("annotations")?
-        .get(key)?
-        .as_str()
-        .map(|s| s.to_string())
+    m.annotations.get(key).cloned()
 }
 
-/// Inject the managed-by label into a manifest's `metadata.labels` so the
-/// resource can be safely pruned later.
-pub fn inject_managed_label(m: &mut RawManifest, key: &str, value: &str) {
-    let obj = match m.data.as_object_mut() {
+/// Inject the managed-by label into a manifest value's `metadata.labels` so the
+/// resource can be safely pruned later. Operates on a freshly-deserialized
+/// `Value` (the caller turns `RawManifest.data` bytes into a `Value` at apply
+/// time, then injects, then applies).
+pub fn inject_managed_label_value(value: &mut Value, key: &str, label_value: &str) {
+    let obj = match value.as_object_mut() {
         Some(o) => o,
         None => return,
     };
@@ -238,7 +256,7 @@ pub fn inject_managed_label(m: &mut RawManifest, key: &str, value: &str) {
         .entry("labels".to_string())
         .or_insert_with(|| Value::Object(serde_json::Map::new()));
     if let Some(labels) = labels_val.as_object_mut() {
-        labels.insert(key.to_string(), Value::String(value.to_string()));
+        labels.insert(key.to_string(), Value::String(label_value.to_string()));
     }
 }
 
@@ -315,16 +333,15 @@ spec:
 
     #[test]
     fn inject_label_into_existing_metadata() {
-        let v = json!({
+        let mut value = json!({
             "apiVersion": "v1",
             "kind": "ConfigMap",
             "metadata": { "name": "a" },
             "data": { "k": "v" }
         });
-        let mut m = value_to_manifest(v).unwrap().unwrap();
-        inject_managed_label(&mut m, "app.kubernetes.io/managed-by", "leancd");
+        inject_managed_label_value(&mut value, "app.kubernetes.io/managed-by", "leancd");
         assert_eq!(
-            m.data["metadata"]["labels"]["app.kubernetes.io/managed-by"],
+            value["metadata"]["labels"]["app.kubernetes.io/managed-by"],
             "leancd"
         );
     }
@@ -332,13 +349,9 @@ spec:
     #[test]
     fn inject_label_creates_metadata() {
         // A manifest without metadata gets metadata.labels injected.
-        let v = json!({ "apiVersion": "v1", "kind": "ConfigMap", "data": {} });
-        // Inject name so it is recognized as a manifest.
-        let mut v = v;
-        v["metadata"] = json!({ "name": "x" });
-        let mut m = value_to_manifest(v).unwrap().unwrap();
-        inject_managed_label(&mut m, "managed-by", "leancd");
-        assert_eq!(m.data["metadata"]["labels"]["managed-by"], "leancd");
+        let mut value = json!({ "apiVersion": "v1", "kind": "ConfigMap", "data": {} });
+        inject_managed_label_value(&mut value, "managed-by", "leancd");
+        assert_eq!(value["metadata"]["labels"]["managed-by"], "leancd");
     }
 
     #[test]

@@ -90,6 +90,14 @@ pub struct Config {
     /// within this window collapses into one pass (avoids N passes on a
     /// reconnect `InitApply` burst or a rapid edit storm).
     pub watch_debounce: std::time::Duration,
+
+    /// In `cache` watch mode, the maximum serialized size (bytes) of an object
+    /// to cache in full. Objects larger than this are tracked by key only and
+    /// drift-checked via a per-GVK `List` fallback, so the cache's RSS does not
+    /// grow with per-object payload size. `0` means everything is LargeTier
+    /// (no bodies cached; drift is fully List-based). Size-based, not kind-based
+    /// — any resource kind can carry a large `data`/`spec`.
+    pub cache_max_object_bytes: usize,
 }
 
 impl Config {
@@ -303,6 +311,7 @@ mod tests {
             lock_wait_timeout: std::time::Duration::from_secs(30),
             watch_mode: crate::watch::WatchMode::Off,
             watch_debounce: std::time::Duration::from_millis(500),
+            cache_max_object_bytes: 12288,
         }
     }
 

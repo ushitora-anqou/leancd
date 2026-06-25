@@ -7,9 +7,9 @@
 //! object (server-injected defaults are tolerated).
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use kube::core::DynamicObject;
-use kube::runtime::reflector::Store;
 use serde_json::Value;
 
 use crate::config::Config;
@@ -17,6 +17,7 @@ use crate::error::Result;
 use crate::kube_util;
 use crate::manifest::RawManifest;
 use crate::prune::ResourceKey;
+use crate::watch::{LightweightStore, ObjKey, Tier};
 
 /// A single detected drift.
 #[derive(Debug, Clone)]
@@ -38,7 +39,9 @@ pub async fn detect(
     }
 
     let label_sel = format!("{}={}", cfg.managed_label_key, cfg.managed_label_value);
-    let mut live_by_gvk: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
+    // Owned list results, kept alive so the reference map below can borrow them
+    // (compute_drifts works on `&DynamicObject`, so the lists are not cloned).
+    let mut lists: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
 
     for (group, version, kind) in gvks.into_keys() {
         let (ar, _caps) = match kube_util::resolve(client, &group, &version, &kind).await {
@@ -57,7 +60,12 @@ pub async fn detect(
                 continue;
             }
         };
-        live_by_gvk.insert((group, version, kind), live);
+        lists.insert((group, version, kind), live);
+    }
+
+    let mut live_by_gvk: HashMap<(String, String, String), Vec<&DynamicObject>> = HashMap::new();
+    for (gvk, objs) in &lists {
+        live_by_gvk.insert(gvk.clone(), objs.iter().collect());
     }
 
     Ok(compute_drifts(manifests, &live_by_gvk))
@@ -70,9 +78,9 @@ pub async fn detect(
 /// reported as missing.
 pub fn compute_drifts(
     manifests: &[RawManifest],
-    live_by_gvk: &HashMap<(String, String, String), Vec<DynamicObject>>,
+    live_by_gvk: &HashMap<(String, String, String), Vec<&DynamicObject>>,
 ) -> Vec<DriftItem> {
-    let empty: Vec<DynamicObject> = Vec::new();
+    let empty: Vec<&DynamicObject> = Vec::new();
     let mut drifts = Vec::new();
     for m in manifests {
         let live = live_by_gvk.get(&m.gvk()).unwrap_or(&empty);
@@ -91,7 +99,7 @@ pub fn compute_drifts(
                 // every spec-less resource (ConfigMap, Namespace, …) report
                 // drift forever.
                 let live_value = serde_json::to_value(lo).unwrap_or(serde_json::Value::Null);
-                if specs_differ(&m.data, &live_value) {
+                if specs_differ(&manifest_value(m), &live_value) {
                     drifts.push(DriftItem {
                         key: ResourceKey::from_manifest(m),
                         reason: "spec differs from desired state".to_string(),
@@ -103,38 +111,161 @@ pub fn compute_drifts(
     drifts
 }
 
-/// Detect drift by reading live objects from cache-mode `Store`s rather than
-/// `List`ing them from the API. Pure w.r.t. the API: each store is snapshotted
-/// via `state()` and fed to [`compute_drifts`]. A GVK present in `manifests` but
-/// absent from `stores` is treated as "nothing live for this kind", so every
-/// manifest of that kind is reported missing (the pass then re-applies,
-/// populating the store on the next watch event). This is the cache-mode
-/// counterpart of `detect`; both share [`compute_drifts`].
-pub fn detect_from_stores(
-    manifests: &[RawManifest],
-    stores: &HashMap<(String, String, String), Store<DynamicObject>>,
-) -> Vec<DriftItem> {
-    let mut live_by_gvk: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
-    for (gvk, store) in stores {
-        let objs: Vec<DynamicObject> = store
-            .state()
-            .into_iter()
-            .map(|arc| (*arc).clone())
-            .collect();
-        live_by_gvk.insert(gvk.clone(), objs);
+/// GVK → manifests whose live object is LargeTier (deferred to a List fallback).
+type LargeByGvk<'a> = HashMap<(String, String, String), Vec<&'a RawManifest>>;
+
+/// First pass of cache-mode drift detection: subset-check SmallTier entries
+/// straight from the cache (no clone, no API), report Absent keys as missing,
+/// and collect LargeTier entries (body not cached) for a per-GVK `List`
+/// fallback. Pure w.r.t. the API. Returns `(drifts, large_by_gvk)`.
+fn drift_from_cache<'a>(
+    manifests: &'a [RawManifest],
+    stores: &HashMap<(String, String, String), Arc<Mutex<LightweightStore>>>,
+) -> (Vec<DriftItem>, LargeByGvk<'a>) {
+    let mut by_gvk: HashMap<(String, String, String), Vec<&RawManifest>> = HashMap::new();
+    for m in manifests {
+        by_gvk.entry(m.gvk()).or_default().push(m);
     }
-    compute_drifts(manifests, &live_by_gvk)
+
+    let mut drifts: Vec<DriftItem> = Vec::new();
+    let mut large_by_gvk: LargeByGvk<'_> = HashMap::new();
+
+    for (gvk, ms) in &by_gvk {
+        let store = match stores.get(gvk) {
+            Some(s) => s,
+            None => {
+                // No cache for this GVK yet (watch not built): report every
+                // manifest of this kind missing, so the pass re-applies and the
+                // store populates on the next watch event. Same absent-GVK
+                // behavior as the former cache-mode path.
+                for m in ms {
+                    drifts.push(DriftItem {
+                        key: ResourceKey::from_manifest(m),
+                        reason: "missing in cluster".to_string(),
+                    });
+                }
+                continue;
+            }
+        };
+        let guard = match store.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                tracing::warn!(gvk = ?gvk, "drift: cache store poisoned; treating as missing");
+                for m in ms {
+                    drifts.push(DriftItem {
+                        key: ResourceKey::from_manifest(m),
+                        reason: "cache unavailable".to_string(),
+                    });
+                }
+                continue;
+            }
+        };
+        for m in ms {
+            let key: ObjKey = (m.name.clone(), m.namespace.clone());
+            match guard.tier_of(&key) {
+                Tier::Small => match guard.small_get(&key) {
+                    Some(lo) => {
+                        let live_value = serde_json::to_value(lo).unwrap_or(Value::Null);
+                        if specs_differ(&manifest_value(m), &live_value) {
+                            drifts.push(DriftItem {
+                                key: ResourceKey::from_manifest(m),
+                                reason: "spec differs from desired state".to_string(),
+                            });
+                        }
+                    }
+                    None => drifts.push(DriftItem {
+                        key: ResourceKey::from_manifest(m),
+                        reason: "missing in cluster".to_string(),
+                    }),
+                },
+                Tier::Large => {
+                    large_by_gvk.entry(gvk.clone()).or_default().push(*m);
+                }
+                Tier::Absent => drifts.push(DriftItem {
+                    key: ResourceKey::from_manifest(m),
+                    reason: "missing in cluster".to_string(),
+                }),
+            }
+        }
+    }
+
+    (drifts, large_by_gvk)
+}
+
+/// Cache-mode drift detection against `LightweightStore`s. SmallTier entries
+/// are subset-checked straight from the cache (no clone, no per-pass `List`);
+/// Absent keys are drift; LargeTier keys (body not cached) fall back to a
+/// per-GVK `List`. This is the cache-mode counterpart of [`detect`]; both
+/// reuse [`specs_differ`] and the internal `spec_subset` helper.
+pub async fn detect_from_lw(
+    client: &kube::client::Client,
+    manifests: &[RawManifest],
+    stores: &HashMap<(String, String, String), Arc<Mutex<LightweightStore>>>,
+    cfg: &Config,
+) -> Result<Vec<DriftItem>> {
+    let (mut drifts, large_by_gvk) = drift_from_cache(manifests, stores);
+    if large_by_gvk.is_empty() {
+        return Ok(drifts);
+    }
+
+    let label_sel = format!("{}={}", cfg.managed_label_key, cfg.managed_label_value);
+    let mut discovery = kube_util::DiscoveryCache::new();
+
+    // LargeTier fallback: one List per GVK that had a LargeTier entry, then
+    // subset-check only those manifests against the fresh live set.
+    for (gvk, ms) in &large_by_gvk {
+        let (group, version, kind) = gvk;
+        let (ar, _caps) = match discovery.get_or_resolve(client, group, version, kind).await {
+            Ok(x) => x,
+            Err(e) => {
+                tracing::warn!(error = %e, gvk = ?gvk, "drift: large-tier discovery failed");
+                continue;
+            }
+        };
+        let live = match kube_util::list_all(client, &ar, Some(&label_sel)).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(error = %e, gvk = ?gvk, "drift: large-tier List fallback failed");
+                continue;
+            }
+        };
+        let live_refs: Vec<&DynamicObject> = live.iter().collect();
+        for m in ms {
+            match find_live_match(m, &live_refs) {
+                None => drifts.push(DriftItem {
+                    key: ResourceKey::from_manifest(m),
+                    reason: "missing in cluster".to_string(),
+                }),
+                Some(lo) => {
+                    let live_value = serde_json::to_value(lo).unwrap_or(Value::Null);
+                    if specs_differ(&manifest_value(m), &live_value) {
+                        drifts.push(DriftItem {
+                            key: ResourceKey::from_manifest(m),
+                            reason: "spec differs from desired state".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(drifts)
 }
 
 /// Find the live object that matches a manifest by name and namespace.
 pub fn find_live_match<'a>(
     m: &RawManifest,
-    live: &'a [DynamicObject],
+    live: &'a [&DynamicObject],
 ) -> Option<&'a DynamicObject> {
-    live.iter().find(|o| {
+    live.iter().copied().find(|o| {
         o.metadata.name.as_deref() == Some(m.name.as_str())
             && o.metadata.namespace.as_deref() == m.namespace.as_deref()
     })
+}
+
+/// Deserialize a manifest's stored YAML bytes into a `Value` for comparison.
+fn manifest_value(m: &RawManifest) -> Value {
+    serde_yaml::from_slice(&m.data).unwrap_or(Value::Null)
 }
 
 /// True when the live object does not satisfy the Git-declared fields.
@@ -376,15 +507,16 @@ mod tests {
         } else {
             format!("{group}/v1")
         };
-        let mut data = json!({
+        let mut value = json!({
             "apiVersion": api_version,
             "kind": kind,
             "metadata": { "name": name },
             "spec": spec,
         });
         if let Some(ns) = namespace {
-            data["metadata"]["namespace"] = json!(ns);
+            value["metadata"]["namespace"] = json!(ns);
         }
+        let data = serde_yaml::to_string(&value).unwrap().into_bytes();
         RawManifest {
             group: group.to_string(),
             version: "v1".to_string(),
@@ -392,6 +524,7 @@ mod tests {
             name: name.to_string(),
             namespace: namespace.map(String::from),
             data,
+            annotations: std::collections::BTreeMap::new(),
         }
     }
 
@@ -417,10 +550,9 @@ mod tests {
             Some("ns"),
             json!({"replicas": 1}),
         );
-        let live = vec![
-            dyn_obj("other", Some("ns"), json!({})),
-            dyn_obj("d", Some("ns"), json!({})),
-        ];
+        let o1 = dyn_obj("other", Some("ns"), json!({}));
+        let o2 = dyn_obj("d", Some("ns"), json!({}));
+        let live = vec![&o1, &o2];
         let found = find_live_match(&m, &live).expect("should match");
         assert_eq!(found.metadata.name.as_deref(), Some("d"));
     }
@@ -428,21 +560,24 @@ mod tests {
     #[test]
     fn find_live_match_returns_none_when_absent() {
         let m = test_manifest("apps", "Deployment", "d", Some("ns"), json!({}));
-        let live = vec![dyn_obj("x", Some("ns"), json!({}))];
+        let o = dyn_obj("x", Some("ns"), json!({}));
+        let live = vec![&o];
         assert!(find_live_match(&m, &live).is_none());
     }
 
     #[test]
     fn find_live_match_respects_namespace() {
         let m = test_manifest("", "ConfigMap", "c", Some("a"), json!({}));
-        let live = vec![dyn_obj("c", Some("b"), json!({}))];
+        let o = dyn_obj("c", Some("b"), json!({}));
+        let live = vec![&o];
         assert!(find_live_match(&m, &live).is_none());
     }
 
     #[test]
     fn find_live_match_handles_cluster_scoped() {
         let m = test_manifest("", "Namespace", "n", None, json!({}));
-        let live = vec![dyn_obj("n", None, json!({}))];
+        let o = dyn_obj("n", None, json!({}));
+        let live = vec![&o];
         assert!(find_live_match(&m, &live).is_some());
     }
 
@@ -455,7 +590,7 @@ mod tests {
             Some("ns"),
             json!({"replicas": 1}),
         );
-        let live: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
+        let live: HashMap<(String, String, String), Vec<&DynamicObject>> = HashMap::new();
         let drifts = compute_drifts(&[m], &live);
         assert_eq!(drifts.len(), 1);
         assert!(drifts[0].reason.contains("missing"));
@@ -472,10 +607,10 @@ mod tests {
             json!({"replicas": 1}),
         );
         let live_obj = dyn_obj("d", Some("ns"), json!({"replicas": 2}));
-        let mut live: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
+        let mut live: HashMap<(String, String, String), Vec<&DynamicObject>> = HashMap::new();
         live.insert(
             ("apps".into(), "v1".into(), "Deployment".into()),
-            vec![live_obj],
+            vec![&live_obj],
         );
         let drifts = compute_drifts(&[m], &live);
         assert_eq!(drifts.len(), 1);
@@ -492,10 +627,10 @@ mod tests {
             json!({"replicas": 1}),
         );
         let live_obj = dyn_obj("d", Some("ns"), json!({"replicas": 1, "extra": true}));
-        let mut live: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
+        let mut live: HashMap<(String, String, String), Vec<&DynamicObject>> = HashMap::new();
         live.insert(
             ("apps".into(), "v1".into(), "Deployment".into()),
-            vec![live_obj],
+            vec![&live_obj],
         );
         let drifts = compute_drifts(&[m], &live);
         assert!(
@@ -514,11 +649,9 @@ mod tests {
             Some("ns"),
             json!({"replicas": 1}),
         );
-        let mut live: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
-        live.insert(
-            ("".into(), "v1".into(), "ConfigMap".into()),
-            vec![dyn_obj("c", Some("ns"), json!({}))],
-        );
+        let cm = dyn_obj("c", Some("ns"), json!({}));
+        let mut live: HashMap<(String, String, String), Vec<&DynamicObject>> = HashMap::new();
+        live.insert(("".into(), "v1".into(), "ConfigMap".into()), vec![&cm]);
         // Deployment has no live entry -> missing
         let drifts = compute_drifts(&[m1, m2], &live);
         assert_eq!(drifts.len(), 1);
@@ -532,14 +665,10 @@ mod tests {
         // must list across all namespaces so both objects reach compute_drifts.
         let m_a = test_manifest("", "ConfigMap", "c", Some("ns1"), json!({"v": 1}));
         let m_b = test_manifest("", "ConfigMap", "c", Some("ns2"), json!({"v": 1}));
-        let mut live: HashMap<(String, String, String), Vec<DynamicObject>> = HashMap::new();
-        live.insert(
-            ("".into(), "v1".into(), "ConfigMap".into()),
-            vec![
-                dyn_obj("c", Some("ns1"), json!({"v": 1})),
-                dyn_obj("c", Some("ns2"), json!({"v": 2})),
-            ],
-        );
+        let c1 = dyn_obj("c", Some("ns1"), json!({"v": 1}));
+        let c2 = dyn_obj("c", Some("ns2"), json!({"v": 2}));
+        let mut live: HashMap<(String, String, String), Vec<&DynamicObject>> = HashMap::new();
+        live.insert(("".into(), "v1".into(), "ConfigMap".into()), vec![&c1, &c2]);
         let drifts = compute_drifts(&[m_a, m_b], &live);
         assert_eq!(drifts.len(), 1, "only ns2 should differ");
         assert_eq!(drifts[0].key.namespace.as_deref(), Some("ns2"));
@@ -573,39 +702,36 @@ mod tests {
         assert_eq!(remove_top_level_keys(&v, &[]), json!({"a": 1, "b": 2}));
     }
 
-    // --- detect_from_stores: reads live objects from a watch-backed Store ---
+    // --- drift_from_cache: LightweightStore Small/Large/Absent routing ---
 
-    fn store_with(kind: &str, live: Vec<DynamicObject>) -> Store<DynamicObject> {
-        use kube::core::ApiResource;
-        use kube::runtime::reflector::store::Writer;
+    /// A `LightweightStore` seeded with `objs` (applied), wrapped for sharing.
+    fn lw_store(max_bytes: usize, objs: Vec<DynamicObject>) -> Arc<Mutex<LightweightStore>> {
         use kube::runtime::watcher;
-        let ar = ApiResource {
-            group: String::new(),
-            version: "v1".into(),
-            api_version: "v1".into(),
-            kind: kind.into(),
-            plural: format!("{}s", kind.to_lowercase()),
-        };
-        let mut writer: Writer<DynamicObject> = Writer::new(ar);
-        for obj in live {
-            writer.apply_watcher_event(&watcher::Event::Apply(obj));
+        let mut s = LightweightStore::new(max_bytes);
+        for o in objs {
+            s.apply_event(&watcher::Event::Apply(o));
         }
-        writer.as_reader()
+        Arc::new(Mutex::new(s))
+    }
+
+    fn lw_stores_with(
+        kind: &str,
+        store: Arc<Mutex<LightweightStore>>,
+    ) -> HashMap<(String, String, String), Arc<Mutex<LightweightStore>>> {
+        let mut stores = HashMap::new();
+        stores.insert(("".to_string(), "v1".to_string(), kind.to_string()), store);
+        stores
     }
 
     #[test]
-    fn detect_from_stores_reads_cache() {
-        let store = store_with(
+    fn drift_from_cache_small_match_no_drift() {
+        let stores = lw_stores_with(
             "ConfigMap",
-            vec![dyn_obj("c", Some("ns"), json!({"data": {"k": "1"}}))],
+            lw_store(
+                1024,
+                vec![dyn_obj("c", Some("ns"), json!({"data": {"k": "1"}}))],
+            ),
         );
-        let mut stores: HashMap<(String, String, String), Store<DynamicObject>> = HashMap::new();
-        stores.insert(
-            ("".to_string(), "v1".to_string(), "ConfigMap".to_string()),
-            store,
-        );
-
-        // Manifest matches the cached object → no drift.
         let m = test_manifest(
             "",
             "ConfigMap",
@@ -613,39 +739,21 @@ mod tests {
             Some("ns"),
             json!({"data": {"k": "1"}}),
         );
-        assert!(detect_from_stores(&[m], &stores).is_empty());
-
-        // Manifest diverges from the cache → drift flagged.
-        let m2 = test_manifest(
-            "",
-            "ConfigMap",
-            "c",
-            Some("ns"),
-            json!({"data": {"k": "2"}}),
-        );
-        assert_eq!(detect_from_stores(&[m2], &stores).len(), 1);
-
-        // A manifest whose kind has no cache entry → reported missing.
-        let m3 = test_manifest("", "Namespace", "n", None, json!({}));
-        assert_eq!(detect_from_stores(&[m3], &stores).len(), 1);
+        let manifests = [m];
+        let (drifts, large) = drift_from_cache(&manifests, &stores);
+        assert!(drifts.is_empty(), "matching SmallTier → no drift");
+        assert!(large.is_empty(), "no LargeTier entries");
     }
 
     #[test]
-    fn detect_from_stores_empty_when_live_is_superset() {
-        let store = store_with(
+    fn drift_from_cache_small_diff_is_drift() {
+        let stores = lw_stores_with(
             "ConfigMap",
-            vec![dyn_obj(
-                "c",
-                Some("ns"),
-                json!({"data": {"k": "1"}, "extra": true}),
-            )],
+            lw_store(
+                1024,
+                vec![dyn_obj("c", Some("ns"), json!({"data": {"k": "2"}}))],
+            ),
         );
-        let mut stores: HashMap<(String, String, String), Store<DynamicObject>> = HashMap::new();
-        stores.insert(
-            ("".to_string(), "v1".to_string(), "ConfigMap".to_string()),
-            store,
-        );
-        // Live is a superset of the manifest (subset check holds) → no drift.
         let m = test_manifest(
             "",
             "ConfigMap",
@@ -653,6 +761,201 @@ mod tests {
             Some("ns"),
             json!({"data": {"k": "1"}}),
         );
-        assert!(detect_from_stores(&[m], &stores).is_empty());
+        let manifests = [m];
+        let (drifts, large) = drift_from_cache(&manifests, &stores);
+        assert_eq!(drifts.len(), 1);
+        assert!(drifts[0].reason.contains("differ"));
+        assert!(large.is_empty());
+    }
+
+    #[test]
+    fn drift_from_cache_absent_is_missing() {
+        let stores = lw_stores_with("ConfigMap", lw_store(1024, vec![]));
+        let m = test_manifest(
+            "",
+            "ConfigMap",
+            "c",
+            Some("ns"),
+            json!({"data": {"k": "1"}}),
+        );
+        let manifests = [m];
+        let (drifts, large) = drift_from_cache(&manifests, &stores);
+        assert_eq!(drifts.len(), 1);
+        assert!(drifts[0].reason.contains("missing"));
+        assert!(large.is_empty());
+    }
+
+    #[test]
+    fn drift_from_cache_large_deferred_to_list() {
+        // A large object is tracked by key only → deferred to List fallback,
+        // not drift-checked in this pass.
+        let stores = lw_stores_with(
+            "ConfigMap",
+            lw_store(
+                100,
+                vec![dyn_obj(
+                    "c",
+                    Some("ns"),
+                    json!({"payload": "x".repeat(1000)}),
+                )],
+            ),
+        );
+        let m = test_manifest(
+            "",
+            "ConfigMap",
+            "c",
+            Some("ns"),
+            json!({"data": {"payload": "y"}}),
+        );
+        let manifests = [m];
+        let (drifts, large) = drift_from_cache(&manifests, &stores);
+        assert!(drifts.is_empty(), "LargeTier not checked in this pass");
+        assert_eq!(large.len(), 1, "LargeTier entry deferred for List fallback");
+    }
+
+    #[test]
+    fn drift_from_cache_no_store_for_gvk_is_missing() {
+        // No cache entry for the manifest's GVK → all manifests missing.
+        let stores: HashMap<(String, String, String), Arc<Mutex<LightweightStore>>> =
+            HashMap::new();
+        let m = test_manifest(
+            "",
+            "ConfigMap",
+            "c",
+            Some("ns"),
+            json!({"data": {"k": "1"}}),
+        );
+        let manifests = [m];
+        let (drifts, _large) = drift_from_cache(&manifests, &stores);
+        assert_eq!(drifts.len(), 1);
+        assert!(drifts[0].reason.contains("missing"));
+    }
+
+    // --- integration: parse → classify → LightweightStore → drift_from_cache ---
+    // These exercise the cache-mode drift path's module seams end-to-end. The
+    // unit tests above build `RawManifest`s directly; these run the real parse
+    // + hook-split + tier-routing pipeline. No API server, no `kind` cluster.
+    use crate::hooks::classify;
+    use crate::manifest::parse_str;
+
+    /// A live ConfigMap-style `DynamicObject` used to seed a cache store as the
+    /// "live" state the watch driver would apply.
+    fn live_cm(name: &str, ns: &str, data: &str) -> DynamicObject {
+        serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": { "name": name, "namespace": ns },
+            "data": { "payload": data },
+        }))
+        .expect("live ConfigMap JSON parses into a DynamicObject")
+    }
+
+    #[test]
+    fn pipeline_small_match_reports_no_drift() {
+        let yaml = "\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: small
+  namespace: default
+data:
+  payload: hi
+";
+        let main = classify(parse_str(yaml).unwrap()).main;
+        assert_eq!(main.len(), 1, "the ConfigMap is the only main resource");
+        let stores = lw_stores_with(
+            "ConfigMap",
+            lw_store(4096, vec![live_cm("small", "default", "hi")]),
+        );
+        let (drifts, large) = drift_from_cache(&main, &stores);
+        assert!(drifts.is_empty(), "matching SmallTier cache → no drift");
+        assert!(large.is_empty());
+    }
+
+    #[test]
+    fn pipeline_small_diff_is_drift() {
+        let yaml = "\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: small
+  namespace: default
+data:
+  payload: hi
+";
+        let main = classify(parse_str(yaml).unwrap()).main;
+        let stores = lw_stores_with(
+            "ConfigMap",
+            lw_store(4096, vec![live_cm("small", "default", "bye")]),
+        );
+        let (drifts, large) = drift_from_cache(&main, &stores);
+        assert_eq!(drifts.len(), 1);
+        assert!(drifts[0].reason.contains("differ"));
+        assert!(large.is_empty());
+    }
+
+    #[test]
+    fn pipeline_large_live_object_deferred_to_list() {
+        // A large *live* object exceeds the threshold → LargeTier, deferred to
+        // the per-GVK List fallback rather than drift-checked in this pass.
+        let yaml = "\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: big
+  namespace: default
+data:
+  payload: git
+";
+        let main = classify(parse_str(yaml).unwrap()).main;
+        let stores = lw_stores_with(
+            "ConfigMap",
+            lw_store(1024, vec![live_cm("big", "default", &"x".repeat(100_000))]),
+        );
+        let (drifts, large) = drift_from_cache(&main, &stores);
+        assert!(
+            drifts.is_empty(),
+            "LargeTier is not drift-checked in this pass"
+        );
+        assert_eq!(large.len(), 1, "LargeTier key deferred for List fallback");
+    }
+
+    #[test]
+    fn pipeline_hook_is_classified_out_of_main() {
+        // A pre-install hook is split into the `pre` phase, so only the
+        // non-hook ConfigMap reaches drift_from_cache.
+        let yaml = "\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: real
+  namespace: default
+data:
+  payload: real
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hook-cm
+  namespace: default
+  annotations:
+    helm.sh/hook: pre-install
+data:
+  payload: hook
+";
+        let classified = classify(parse_str(yaml).unwrap());
+        assert!(
+            !classified.pre.is_empty(),
+            "the pre-install hook lands in `pre`"
+        );
+        assert_eq!(classified.main.len(), 1);
+        assert_eq!(classified.main[0].name, "real");
+        let stores = lw_stores_with(
+            "ConfigMap",
+            lw_store(4096, vec![live_cm("real", "default", "real")]),
+        );
+        let (drifts, large) = drift_from_cache(&classified.main, &stores);
+        assert!(drifts.is_empty());
+        assert!(large.is_empty());
     }
 }

@@ -17,6 +17,12 @@ mod state;
 mod version;
 mod watch;
 
+// mimalloc returns freed pages to the OS, keeping RSS low under the churn of
+// transient drift-check allocations (see bench/cache-bloat.sh). It replaces the
+// system allocator for the whole process.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};

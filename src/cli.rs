@@ -137,6 +137,13 @@ pub struct CommonArgs {
     /// InitApply burst or a rapid edit storm does not trigger N passes.
     #[arg(long, env = "LEANCD_WATCH_DEBOUNCE", default_value = "500ms")]
     pub watch_debounce: String,
+
+    /// In `cache` watch mode, the maximum serialized size (bytes) of an object
+    /// cached in full; larger objects are tracked by key only and drift-checked
+    /// via a per-GVK `List` fallback (size-based, any kind). `0` disables body
+    /// caching entirely (all LargeTier).
+    #[arg(long, env = "LEANCD_CACHE_MAX_OBJECT_BYTES", default_value = "12288")]
+    pub cache_max_object_bytes: usize,
 }
 
 impl CommonArgs {
@@ -170,6 +177,7 @@ impl CommonArgs {
             lock_wait_timeout: Duration::from_secs(self.lock_wait_timeout_secs),
             watch_mode: crate::watch::WatchMode::parse(&self.watch_mode)?,
             watch_debounce: parse_duration(&self.watch_debounce)?,
+            cache_max_object_bytes: self.cache_max_object_bytes,
         })
     }
 }
@@ -202,6 +210,7 @@ mod tests {
             lock_wait_timeout_secs: 30,
             watch_mode: "off".into(),
             watch_debounce: "500ms".into(),
+            cache_max_object_bytes: 12288,
         }
     }
 
@@ -253,6 +262,53 @@ mod tests {
         assert_eq!(
             a.to_config().unwrap().watch_debounce,
             Duration::from_millis(750)
+        );
+    }
+
+    #[test]
+    fn cache_max_object_bytes_defaults_to_threshold() {
+        assert_eq!(
+            common(300).to_config().unwrap().cache_max_object_bytes,
+            12288
+        );
+    }
+
+    #[test]
+    fn cache_max_object_bytes_is_configurable() {
+        let mut a = common(300);
+        a.cache_max_object_bytes = 4096;
+        assert_eq!(a.to_config().unwrap().cache_max_object_bytes, 4096);
+    }
+
+    #[test]
+    fn cache_max_object_bytes_reads_from_env() {
+        // clap's `env =` attribute fills the flag from
+        // LEANCD_CACHE_MAX_OBJECT_BYTES when --cache-max-object-bytes is absent.
+        std::env::set_var("LEANCD_CACHE_MAX_OBJECT_BYTES", "8192");
+        let cli = Cli::try_parse_from(["leancd", "sync", "--repo-url", "https://x"]).unwrap();
+        std::env::remove_var("LEANCD_CACHE_MAX_OBJECT_BYTES");
+        let args = match cli.command {
+            Command::Sync(a) => a,
+            _ => panic!("expected the sync subcommand"),
+        };
+        assert_eq!(args.cache_max_object_bytes, 8192);
+    }
+
+    #[test]
+    fn cache_max_object_bytes_rejects_non_numeric() {
+        // usize parse failure is surfaced by clap as an error (not a Config
+        // error): `--cache-max-object-bytes abc` must not build a Config.
+        let err = Cli::try_parse_from([
+            "leancd",
+            "sync",
+            "--repo-url",
+            "https://x",
+            "--cache-max-object-bytes",
+            "not-a-number",
+        ]);
+        assert!(
+            err.is_err(),
+            "non-numeric --cache-max-object-bytes must be rejected"
         );
     }
 }

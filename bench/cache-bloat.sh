@@ -104,7 +104,16 @@ BENCH_PAYLOAD_BYTES="$BLOAT_PAYLOAD" LEANCD_WATCH_MODE=cache \
   RSS_BUDGET_MIB="$BUDGET_MIB" KIND_CLUSTER_NAME="$CLUSTER" run_bench_capture
 print_row "large-obj" "$PEAK" "$IDLE" "$TMAX" "$TMIN"
 
-# --- Scenario 3: churn (create/delete leak check) -------------------------
+# --- Scenario 3: single-large-file (one big multi-doc YAML) ---------------
+# Same payload as large-obj, but every manifest is merged into one file, so the
+# parse path reads one large document stream rather than many small files.
+echo ">> scenario single-large-file: ${BLOAT_PAYLOAD}B payload, one file" >&2
+BENCH_MERGE_TO_SINGLE_FILE=1 BENCH_PAYLOAD_BYTES="$BLOAT_PAYLOAD" \
+  LEANCD_WATCH_MODE=cache RSS_BUDGET_MIB="$BUDGET_MIB" KIND_CLUSTER_NAME="$CLUSTER" \
+  run_bench_capture
+print_row "single-file" "$PEAK" "$IDLE" "$TMAX" "$TMIN"
+
+# --- Scenario 4: churn (create/delete leak check) -------------------------
 echo ">> scenario churn: $BLOAT_CHURNS create/delete cycles" >&2
 CHURN_CLUSTER="$CLUSTER-churn"
 WORK="$(mktemp -d)"

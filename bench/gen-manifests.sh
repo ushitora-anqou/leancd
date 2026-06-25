@@ -131,6 +131,24 @@ rules:
     verbs: ["get", "list"]
 EOF
 
+# Optionally merge every generated manifest into one multi-document YAML file
+# (for the single-large-file RSS scenario). The per-resource files are removed.
+if [ "${BENCH_MERGE_TO_SINGLE_FILE:-0}" = "1" ]; then
+  merged="$OUT/all.yaml"
+  first=1
+  for f in "$OUT"/*.yaml; do
+    [ "$f" = "$merged" ] && continue
+    if [ "$first" = 1 ]; then
+      cp "$f" "$merged"
+      first=0
+    else
+      printf '\n---\n' >> "$merged"
+      cat "$f" >> "$merged"
+    fi
+    rm -f "$f"
+  done
+fi
+
 per_ns=$(( DEP_PER_NS + STS_PER_NS + CM_PER_NS + SVC_PER_NS ))
 total=$(( NS_COUNT * per_ns ))
 echo "generated $NS_COUNT namespaces x $per_ns resources each ($total namespaced + $NS_COUNT Namespaces + ClusterRole) into $OUT"
