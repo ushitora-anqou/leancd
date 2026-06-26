@@ -314,7 +314,7 @@ pub fn find_live_match<'a>(
 
 /// Deserialize a manifest's stored YAML bytes into a `Value` for comparison.
 fn manifest_value(m: &RawManifest) -> Value {
-    serde_yaml::from_slice(&m.data).unwrap_or(Value::Null)
+    crate::manifest::from_yaml_slice(&m.data).unwrap_or(Value::Null)
 }
 
 /// True when the live object does not satisfy the Git-declared fields.
@@ -565,7 +565,9 @@ mod tests {
         if let Some(ns) = namespace {
             value["metadata"]["namespace"] = json!(ns);
         }
-        let data = serde_yaml::to_string(&value).unwrap().into_bytes();
+        let data = crate::manifest::to_yaml_string(&value)
+            .unwrap()
+            .into_bytes();
         RawManifest {
             group: group.to_string(),
             version: "v1".to_string(),

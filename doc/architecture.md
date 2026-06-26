@@ -41,7 +41,7 @@ one path) into the cluster it runs in.
         │ git_sync  manifest  kube_util   drift/prune  state │
         │   │          │          │          │       │   │
         │   ▼          ▼          ▼          ▼       ▼   │
-        │  git CLI   serde_yaml  kube API  kube API  CM  │
+        │  git CLI serde_saphyr kube API  kube API  CM  │
         └─────────────────────────────────────────────┘
                          │                  ▲
                          ▼                  │
@@ -211,12 +211,16 @@ selection is driven by `Config::repo_kind`:
 ## 6. Manifest parsing
 
 `manifest::parse_dir` recursively collects `*.yaml` and `*.yml` files under
-`work_dir/path` and parses each with a streaming `serde_yaml::Deserializer`
+`work_dir/path` and parses each with `serde_saphyr::from_multiple`
 (one document at a time, so the full set is never held in memory at once).
-`serde_yaml` is used deliberately — despite being in maintenance mode it is the
-stable parser with the streaming `Deserializer` this needs; `serde_yml` lacks
-an equivalent streaming-from-string API. `manifest.rs` carries
-`#![allow(deprecated)]` on purpose.
+`serde_saphyr` (granit-parser-based, actively maintained, no `unsafe`) is
+already linked transitively via `kube`, so depending on it directly adds no
+new code to the binary; it replaces the archived, deprecated `serde_yaml`.
+`manifest.rs` funnels every `serde_saphyr` call through `pub(crate)` helpers,
+and its default `Options` (`strict_booleans = false`) reproduce `serde_yaml`'s
+YAML 1.1 boolean semantics. An unparseable document now fails the whole file
+(previously the bad document was skipped and the rest kept); the caller
+(`parse_dir`) logs and skips the file.
 
 Each document becomes a `RawManifest` if it has `apiVersion`, `kind`, and
 `metadata.name`; non-mapping, null, or incomplete documents are skipped (not

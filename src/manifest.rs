@@ -1,20 +1,44 @@
 //! Parsing of Kubernetes manifests from YAML.
 //!
-//! Multi-document YAML is parsed one document at a time (streaming) so the
-//! full manifest set is never held in memory at once. Manifests are kept as
-//! untyped JSON values so they can be applied generically via `DynamicObject`
-//! to any resource kind, including CRDs.
+//! Multi-document YAML is parsed document-by-document so the full manifest set
+//! is never held in memory at once. Manifests are kept as untyped JSON values
+//! so they can be applied generically via `DynamicObject` to any resource kind,
+//! including CRDs.
+//!
+//! All `serde_saphyr` calls are funneled through the helpers below
+//! ([`parse_yaml_multi`], [`from_yaml_slice`], [`to_yaml_string`]) so a future
+//! major bump of the (pre-1.0) crate touches only this module. `serde_saphyr`
+//! is already linked transitively via `kube`, so depending on it directly adds
+//! no new code to the binary; it replaces the archived, deprecated `serde_yaml`.
 
-#![allow(deprecated)] // serde_yaml is maintenance-mode but is the stable,
-// streaming-capable YAML parser we depend on.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
 use serde_json::Value;
-use serde_yaml::Deserializer;
 
 use crate::error::{Error, Result};
+
+/// Deserialize a multi-document YAML string into untyped JSON values, one
+/// document per element. Empty documents are skipped by `from_multiple`.
+///
+/// This and the helpers below centralize the `serde_saphyr` dependency.
+pub(crate) fn parse_yaml_multi(yaml: &str) -> Result<Vec<Value>> {
+    serde_saphyr::from_multiple::<Value>(yaml)
+        .map_err(|e| Error::Manifest(format!("failed to parse YAML: {e}")))
+}
+
+/// Deserialize a single YAML document (a byte slice) into an untyped JSON
+/// value. The error carries only the underlying message; callers attach their
+/// own context (e.g. "failed to parse hook manifest").
+pub(crate) fn from_yaml_slice(bytes: &[u8]) -> Result<Value> {
+    serde_saphyr::from_slice(bytes).map_err(|e| Error::Manifest(format!("{e}")))
+}
+
+/// Serialize an untyped JSON value to a YAML string.
+pub(crate) fn to_yaml_string(value: &Value) -> Result<String> {
+    serde_saphyr::to_string(value)
+        .map_err(|e| Error::Manifest(format!("failed to serialize YAML: {e}")))
+}
 
 /// A single parsed manifest, kept as an untyped value plus the identity bits
 /// extracted from `apiVersion`/`kind`/`metadata`.
@@ -94,9 +118,7 @@ fn value_to_manifest(value: Value) -> Result<Option<RawManifest>> {
         .unwrap_or_default();
 
     let (group, version) = split_api_version(&api_version);
-    let data = serde_yaml::to_string(&value)
-        .map_err(|e| Error::Manifest(format!("failed to serialize manifest: {e}")))?
-        .into_bytes();
+    let data = to_yaml_string(&value)?.into_bytes();
     Ok(Some(RawManifest {
         group,
         version,
@@ -111,17 +133,15 @@ fn value_to_manifest(value: Value) -> Result<Option<RawManifest>> {
 /// Parse a YAML string that may contain multiple documents. A `kind: List`
 /// resource is expanded into its `items`, so a `List` behaves like separate
 /// documents.
+///
+/// Empty documents are skipped. An unparseable document fails the whole string
+/// (the caller — [`parse_dir`] — logs and skips the file); this is stricter
+/// than the prior `serde_yaml` streaming path, which skipped a single bad
+/// document and kept the rest, but safer: a file with a malformed document is
+/// not partially applied.
 pub fn parse_str(yaml: &str) -> Result<Vec<RawManifest>> {
     let mut out = Vec::new();
-    for doc in Deserializer::from_str(yaml) {
-        let value: Value = match Value::deserialize(doc) {
-            Ok(v) => v,
-            Err(e) => {
-                // Skip blank or unparseable documents rather than aborting.
-                tracing::debug!(error = %e, "skipping unparseable YAML document");
-                continue;
-            }
-        };
+    for value in parse_yaml_multi(yaml)? {
         expand_value(value, &mut out)?;
     }
     Ok(out)
@@ -304,6 +324,27 @@ spec:
         assert_eq!(ms[1].group, "apps");
         assert_eq!(ms[1].kind, "Deployment");
         assert_eq!(ms[1].name, "d");
+    }
+
+    #[test]
+    fn yaml11_booleans_round_trip_as_bool() {
+        // Regression guard: serde_yaml (YAML 1.1) treated bare no/off/yes/on as
+        // booleans. serde_saphyr's default Options (strict_booleans = false)
+        // matches that, so `enabled: no` round-trips as Bool(false), not the
+        // string "no" — preserving behavior for user manifests that rely on it.
+        let yaml = "\
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: a
+data:
+  enabled: no
+  disabled: off
+";
+        let ms = parse_str(yaml).unwrap();
+        let v: Value = from_yaml_slice(&ms[0].data).unwrap();
+        assert_eq!(v["data"]["enabled"], Value::Bool(false));
+        assert_eq!(v["data"]["disabled"], Value::Bool(false));
     }
 
     #[test]

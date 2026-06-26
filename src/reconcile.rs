@@ -366,7 +366,7 @@ impl Reconciler {
                     continue;
                 }
             };
-            let mut value: serde_json::Value = serde_yaml::from_slice(&m.data)
+            let mut value: serde_json::Value = manifest::from_yaml_slice(&m.data)
                 .map_err(|e| Error::Manifest(format!("failed to parse manifest: {e}")))?;
             manifest::inject_managed_label_value(
                 &mut value,

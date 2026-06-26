@@ -322,7 +322,7 @@ async fn run_one(
         .await;
     }
 
-    let mut value: serde_json::Value = serde_yaml::from_slice(&m.data)
+    let mut value: serde_json::Value = crate::manifest::from_yaml_slice(&m.data)
         .map_err(|e| (key.clone(), format!("failed to parse hook manifest: {e}")))?;
     crate::manifest::inject_managed_label_value(
         &mut value,
@@ -465,7 +465,7 @@ mod tests {
         } else {
             format!("{group}/v1")
         };
-        let data = serde_yaml::to_string(&json!({
+        let data = crate::manifest::to_yaml_string(&json!({
             "apiVersion": api_version,
             "kind": kind,
             "metadata": Value::Object(meta),

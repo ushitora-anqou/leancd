@@ -1082,7 +1082,7 @@ mod tests {
         } else {
             format!("{group}/{version}")
         };
-        let data = serde_yaml::to_string(&json!({
+        let data = crate::manifest::to_yaml_string(&json!({
             "apiVersion": api_version,
             "kind": kind,
             "metadata": {"name": name, "namespace": ns},
