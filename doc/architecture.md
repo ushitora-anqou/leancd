@@ -216,7 +216,7 @@ selection is driven by `Config::repo_kind`:
 `serde_yaml` is used deliberately — despite being in maintenance mode it is the
 stable parser with the streaming `Deserializer` this needs; `serde_yml` lacks
 an equivalent streaming-from-string API. `manifest.rs` carries
-`#![allow(deprecated)]` on purpose, and `kube-rs` depends on `serde_yaml` too.
+`#![allow(deprecated)]` on purpose.
 
 Each document becomes a `RawManifest` if it has `apiVersion`, `kind`, and
 `metadata.name`; non-mapping, null, or incomplete documents are skipped (not

@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use kube::client::Client;
 use kube::core::DynamicObject;
-use rand::Rng;
+use rand::RngExt;
 use tokio::sync::Notify;
 
 use crate::config::Config;
@@ -571,7 +571,7 @@ fn next_delay(
 /// repeated failures across instances do not synchronize. Sampled with `rand`
 /// (not deterministic in a seed); see the test `jitter_factor_in_range`.
 fn jitter_factor() -> f64 {
-    rand::thread_rng().gen_range(0.75..1.0)
+    rand::rng().random_range(0.75..1.0)
 }
 
 /// Scale `delay` by `jitter_factor()`, i.e. into `[0.75, 1.0)` of it.

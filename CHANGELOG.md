@@ -52,6 +52,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `bench/bench.sh` is now `RSS_BUDGET_MIB=50` (default); `bench/scale.sh`
   continues to forward 100. Lean CD measures ≈16 MiB self RSS at the default
   scale, so 50 MiB keeps ample headroom while sharpening the regression gate.
+- **Dependencies updated**: `kube` 3.1 → 4.0 with `k8s-openapi` 0.27 → 0.28
+  (Kubernetes `v1_36`); the OpenTelemetry stack (`opentelemetry`,
+  `opentelemetry-otlp`, `opentelemetry_sdk`) 0.28 → 0.32 (the Metrics SDK
+  stabilized in 0.30); and `rand` 0.8 → 0.10. `serde_yaml` 0.9.34 is retained
+  deliberately — the streaming `Deserializer` it provides is still required and
+  `serde_yml` has no equivalent. The OTel metric
+  unit tests moved off the now feature-gated `ManualReader`/`MetricReader`
+  plumbing onto the SDK's supported `InMemoryMetricExporter` (`testing`
+  feature, a dev-dependency so resolver 2 keeps it out of the release binary).
+  All semver-compatible transitive deps were refreshed via `cargo update`.
+  nix flake inputs are intentionally left untouched. RSS stays ≈19 MiB
+  self/tree, well under the 50 MiB budget (`make bench`).
 
 ## [0.1.1] - 2026-06-22
 

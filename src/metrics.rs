@@ -223,15 +223,10 @@ pub fn current_rss_bytes() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Weak};
 
     use opentelemetry::metrics::MeterProvider as _;
-    use opentelemetry_sdk::error::OTelSdkResult;
-    use opentelemetry_sdk::metrics::data::{Gauge, ResourceMetrics};
-    use opentelemetry_sdk::metrics::reader::MetricReader;
-    use opentelemetry_sdk::metrics::{
-        InstrumentKind, ManualReader, MetricResult, Pipeline, Temporality,
-    };
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
+    use opentelemetry_sdk::metrics::InMemoryMetricExporter;
 
     /// The headline guarantee: even the test process itself must sit well under
     /// the RSS budget. This is a sanity check for the measurement code;
@@ -254,59 +249,40 @@ mod tests {
         }
     }
 
-    /// A `MetricReader` shared between the provider (which owns a clone) and
-    /// the test (which calls `collect`). `ManualReader` is not cloneable, so we
-    /// wrap `Arc<dyn MetricReader>` and delegate — the same pattern the OTel SDK
-    /// benchmarks use.
-    #[derive(Clone, Debug)]
-    struct SharedReader(Arc<dyn MetricReader>);
-
-    impl MetricReader for SharedReader {
-        fn register_pipeline(&self, pipeline: Weak<Pipeline>) {
-            self.0.register_pipeline(pipeline)
-        }
-        fn collect(&self, rm: &mut ResourceMetrics) -> MetricResult<()> {
-            self.0.collect(rm)
-        }
-        fn force_flush(&self) -> OTelSdkResult {
-            self.0.force_flush()
-        }
-        fn shutdown(&self) -> OTelSdkResult {
-            self.0.shutdown()
-        }
-        fn temporality(&self, kind: InstrumentKind) -> Temporality {
-            self.0.temporality(kind)
-        }
-    }
-
-    /// Build a provider on a shared in-memory reader, apply `f` to a fresh
-    /// `Metrics`, then collect the exported data through the reader.
-    fn collect_after(f: impl FnOnce(&Metrics)) -> ResourceMetrics {
-        let reader = SharedReader(Arc::new(ManualReader::builder().build()));
+    /// Build a provider on an in-memory exporter, apply `f` to a fresh
+    /// `Metrics`, flush, then return the exported data. The `testing` feature of
+    /// `opentelemetry_sdk` (a dev-only dependency — resolver 2 keeps it out of
+    /// the release binary) provides `InMemoryMetricExporter`, the SDK's
+    /// supported metric test path in 0.32; this replaces the 0.28
+    /// `ManualReader`/`MetricReader` plumbing, which became feature-gated behind
+    /// `experimental_metrics_custom_reader`.
+    fn collect_after(f: impl FnOnce(&Metrics)) -> Vec<ResourceMetrics> {
+        let exporter = InMemoryMetricExporter::default();
         let provider = SdkMeterProvider::builder()
             .with_resource(Resource::builder_empty().build())
-            .with_reader(reader.clone())
+            .with_periodic_exporter(exporter.clone())
             .build();
         let meter = provider.meter("leancd-test");
         let metrics = Metrics::new(&meter);
         f(&metrics);
         drop(metrics);
         drop(meter);
-        let mut rm = ResourceMetrics {
-            resource: Resource::builder_empty().build(),
-            scope_metrics: Vec::new(),
-        };
-        reader.collect(&mut rm).expect("collect");
-        rm
+        provider.force_flush().expect("flush");
+        exporter.get_finished_metrics().expect("finished metrics")
     }
 
     /// Look up the most recent data-point value of a labelless i64 gauge.
-    fn gauge_value(rm: &ResourceMetrics, name: &str) -> Option<i64> {
-        for scope in &rm.scope_metrics {
-            for metric in &scope.metrics {
-                if metric.name.as_ref() == name {
-                    let data = metric.data.as_any().downcast_ref::<Gauge<i64>>()?;
-                    return data.data_points.last().map(|p| p.value);
+    fn gauge_value(rms: &[ResourceMetrics], name: &str) -> Option<i64> {
+        for rm in rms {
+            for scope in rm.scope_metrics() {
+                for metric in scope.metrics() {
+                    if metric.name() == name {
+                        if let AggregatedMetrics::I64(MetricData::Gauge(g)) = metric.data() {
+                            if let Some(dp) = g.data_points().last() {
+                                return Some(dp.value());
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -327,25 +303,28 @@ mod tests {
         });
 
         let mut found = 0;
-        for scope in &rm.scope_metrics {
-            for metric in &scope.metrics {
-                if metric.name.as_ref() == "leancd_drift_detected" {
-                    let data = metric
-                        .data
-                        .as_any()
-                        .downcast_ref::<Gauge<i64>>()
-                        .expect("gauge data");
-                    assert_eq!(data.data_points.len(), 2, "expected two GVK series");
-                    for dp in &data.data_points {
-                        let g = str_attr(&dp.attributes, "group");
-                        let v = str_attr(&dp.attributes, "version");
-                        let k = str_attr(&dp.attributes, "kind");
-                        match (g.as_str(), v.as_str(), k.as_str()) {
-                            ("apps", "v1", "Deployment") => assert_eq!(dp.value, 2),
-                            ("", "v1", "ConfigMap") => assert_eq!(dp.value, 1),
-                            other => panic!("unexpected GVK {other:?}"),
+        for rm in &rm {
+            for scope in rm.scope_metrics() {
+                for metric in scope.metrics() {
+                    if metric.name() == "leancd_drift_detected" {
+                        let data_points: Vec<_> = match metric.data() {
+                            AggregatedMetrics::I64(MetricData::Gauge(gauge)) => {
+                                gauge.data_points().collect()
+                            }
+                            _ => Vec::new(),
+                        };
+                        assert_eq!(data_points.len(), 2, "expected two GVK series");
+                        for dp in data_points {
+                            let g = str_attr(dp.attributes(), "group");
+                            let v = str_attr(dp.attributes(), "version");
+                            let k = str_attr(dp.attributes(), "kind");
+                            match (g.as_str(), v.as_str(), k.as_str()) {
+                                ("apps", "v1", "Deployment") => assert_eq!(dp.value(), 2),
+                                ("", "v1", "ConfigMap") => assert_eq!(dp.value(), 1),
+                                other => panic!("unexpected GVK {other:?}"),
+                            }
+                            found += 1;
                         }
-                        found += 1;
                     }
                 }
             }
@@ -360,15 +339,16 @@ mod tests {
             m.reset_drift();
         });
 
-        for scope in &rm.scope_metrics {
-            for metric in &scope.metrics {
-                if metric.name.as_ref() == "leancd_drift_detected" {
-                    let data = metric
-                        .data
-                        .as_any()
-                        .downcast_ref::<Gauge<i64>>()
-                        .expect("gauge data");
-                    assert!(data.data_points.is_empty(), "reset did not clear series");
+        for rm in &rm {
+            for scope in rm.scope_metrics() {
+                for metric in scope.metrics() {
+                    if metric.name() == "leancd_drift_detected" {
+                        let count = match metric.data() {
+                            AggregatedMetrics::I64(MetricData::Gauge(g)) => g.data_points().count(),
+                            _ => 0,
+                        };
+                        assert!(count == 0, "reset did not clear series");
+                    }
                 }
             }
         }
@@ -382,23 +362,26 @@ mod tests {
         });
 
         let mut found = 0;
-        for scope in &rm.scope_metrics {
-            for metric in &scope.metrics {
-                if metric.name.as_ref() == "leancd_health_status" {
-                    let data = metric
-                        .data
-                        .as_any()
-                        .downcast_ref::<Gauge<i64>>()
-                        .expect("gauge data");
-                    assert_eq!(data.data_points.len(), 2, "expected two status series");
-                    for dp in &data.data_points {
-                        let s = str_attr(&dp.attributes, "status");
-                        match s.as_str() {
-                            "Healthy" => assert_eq!(dp.value, 3),
-                            "Progressing" => assert_eq!(dp.value, 1),
-                            other => panic!("unexpected status {other:?}"),
+        for rm in &rm {
+            for scope in rm.scope_metrics() {
+                for metric in scope.metrics() {
+                    if metric.name() == "leancd_health_status" {
+                        let data_points: Vec<_> = match metric.data() {
+                            AggregatedMetrics::I64(MetricData::Gauge(gauge)) => {
+                                gauge.data_points().collect()
+                            }
+                            _ => Vec::new(),
+                        };
+                        assert_eq!(data_points.len(), 2, "expected two status series");
+                        for dp in data_points {
+                            let s = str_attr(dp.attributes(), "status");
+                            match s.as_str() {
+                                "Healthy" => assert_eq!(dp.value(), 3),
+                                "Progressing" => assert_eq!(dp.value(), 1),
+                                other => panic!("unexpected status {other:?}"),
+                            }
+                            found += 1;
                         }
-                        found += 1;
                     }
                 }
             }
@@ -413,15 +396,16 @@ mod tests {
             m.reset_health();
         });
 
-        for scope in &rm.scope_metrics {
-            for metric in &scope.metrics {
-                if metric.name.as_ref() == "leancd_health_status" {
-                    let data = metric
-                        .data
-                        .as_any()
-                        .downcast_ref::<Gauge<i64>>()
-                        .expect("gauge data");
-                    assert!(data.data_points.is_empty(), "reset did not clear series");
+        for rm in &rm {
+            for scope in rm.scope_metrics() {
+                for metric in scope.metrics() {
+                    if metric.name() == "leancd_health_status" {
+                        let count = match metric.data() {
+                            AggregatedMetrics::I64(MetricData::Gauge(g)) => g.data_points().count(),
+                            _ => 0,
+                        };
+                        assert!(count == 0, "reset did not clear series");
+                    }
                 }
             }
         }
@@ -429,9 +413,8 @@ mod tests {
 
     /// Read a string-valued attribute, falling back to "" (cluster-scoped kinds
     /// have an absent group, which OTel may omit rather than emitting an empty).
-    fn str_attr(attrs: &[KeyValue], key: &str) -> String {
+    fn str_attr<'a>(mut attrs: impl Iterator<Item = &'a KeyValue>, key: &str) -> String {
         attrs
-            .iter()
             .find(|kv| kv.key.as_str() == key)
             .map(|kv| kv.value.to_string())
             .unwrap_or_default()

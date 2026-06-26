@@ -91,8 +91,8 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 
 ## Implementation notes worth remembering
 
-- **`serde_yaml` is intentional, despite deprecation.** It supports the streaming `Deserializer` that `manifest.rs` needs; `serde_yml` lacks an equivalent streaming-from-string API. `manifest.rs` carries `#![allow(deprecated)]` on purpose. kube-rs also depends on `serde_yaml`.
-- **kube-rs v3 discovery API**: `kube::discovery::pinned_kind(client, &gvk)` returns `(ApiResource, ApiCapabilities)`; use `caps.scope` (`Scope::Cluster` vs namespaced) to pick `Api::all_with` vs `Api::namespaced_with`. SSA is `api.patch(name, &PatchParams::apply(fm).force(), &Patch::Apply(&obj))`.
+- **`serde_yaml` is intentional, despite deprecation.** It supports the streaming `Deserializer` that `manifest.rs` needs; `serde_yml` lacks an equivalent streaming-from-string API. `manifest.rs` carries `#![allow(deprecated)]` on purpose.
+- **kube-rs v4 discovery API**: `kube::discovery::pinned_kind(client, &gvk)` returns `(ApiResource, ApiCapabilities)`; use `caps.scope` (`Scope::Cluster` vs namespaced) to pick `Api::all_with` vs `Api::namespaced_with`. SSA is `api.patch(name, &PatchParams::apply(fm).force(), &Patch::Apply(&obj))`.
 - **TLS is rustls** (`features = ["rustls-tls"]`) — OpenSSL is intentionally avoided.
 - **Managed-by label** (`app.kubernetes.io/managed-by=leancd` by default) is injected at apply time on every resource. Pruning uses the persisted applied-set as the primary signal and the label as the safety net.
 - **Individual apply failures are logged, not fatal** (`apply_all` continues on error); a hard failure is only surfaced for git/state/discovery-stopping errors.
