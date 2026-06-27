@@ -70,6 +70,11 @@ listener — metrics reach Grafana via the OTLP collector set with
 | `git.credentialsSecretName` | `leancd-git-credentials` | Secret with GIT_USERNAME/GIT_PASSWORD or GIT_SSH_KEY |
 | `extraEnv` | `[]` | Extra env appended after the built-ins (last wins, so any `LEANCD_*`/`OTEL_*` can be overridden) |
 | `resources` | limits 128Mi/200m, requests 32Mi/50m | RSS stays minimal; the limit leaves headroom (see `bench/`) |
+| `podDisruptionBudget.enabled` / `.minAvailable` | `true` / `1` | PDB protecting the single replica from voluntary eviction (node drains) |
+| `priorityClass.enabled` / `.value` | `false` / `1000000` | Opt-in high PriorityClass — the controller is among the last evicted under node pressure |
+| `networkPolicy.enabled` | `true` | Generate the egress-restricting NetworkPolicy in **both** RBAC modes |
+| `startupProbe` | (see values) | `leancd health` startup probe; a slow first clone/discovery is not killed by liveness |
+| `image.pullSecrets` | `[]` | Pull secrets for a private / air-gapped registry |
 
 Resource names are fixed (`leancd`, `leancd-grafana-dashboard`, …) and do not
 track the release name — Lean CD is a cluster-scoped singleton. To run more than

@@ -224,6 +224,42 @@ It exposes no HTTP listener — wire it to a Deployment `livenessProbe`/
 `readinessProbe` as `exec: [leancd, health]` (see the chart's
 [`templates/deployment.yaml`](../charts/leancd/templates/deployment.yaml)).
 
+### `leancd diff`
+
+Print the drift between the desired manifests (at the current Git HEAD) and the
+live cluster — a read-only report for reviewing a change before it is applied.
+It fetches the latest HEAD, parses the manifests, and runs the drift check; it
+applies nothing, writes no state, and takes no reconcile Lease. Output is one
+line per drift:
+
+```
+leancd diff (sha a1b2c3d): 2 drift(s)
+  [apps/v1/Deployment default/web] — spec differs from desired state
+  [v1/ConfigMap default/cm] — missing in cluster
+```
+
+`in sync — no drift detected` means the live state already satisfies Git. This
+is the read-only counterpart of `sync --dry-run`.
+
+### `leancd rollback`
+
+Re-sync to a past commit. `--to <sha>` checks out a specific commit; omit it to
+roll back one commit (`HEAD^`). The shallow clone is deepened in batches until
+the target is reachable, then a full apply runs against it.
+
+This is a **temporary** rollback: Git is the source of truth, so the next
+controller pass fetches the branch HEAD and reconverges. To make a rollback
+permanent, commit a `git revert` (or rebase) to Git and let normal sync pick it
+up. `rollback` is for fast recovery while the Git fix is in flight.
+
+### `sync --dry-run`
+
+`sync --dry-run` validates the desired set with a server-side **dry-run** apply
+(`dryRun`) and reports what would change, without mutating the cluster or
+persisting state. Hooks and pruning are skipped (no side effects), and the sync
+state (`last_sha`, counts) is not advanced. Use it as a pre-deploy check that
+admission control accepts the manifests (CRD validation, OPA/Gatekeeper, etc.).
+
 ## 5. Configuration reference
 
 ### 5.1 Flags and environment variables
@@ -254,6 +290,8 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 | `--lock-wait-timeout-secs` | `LEANCD_LOCK_WAIT_TIMEOUT_SECS` | `30` | all | seconds to wait for the reconcile Lease when another pass holds it before skipping with a "busy" INFO log (not an error) |
 | `--watch-mode` | `LEANCD_WATCH_MODE` | `cache` | controller | how cluster-side drift wakes the loop: `off` (periodic poll only), `trigger` (a `watcher` per managed GVK pokes the loop on any change; drift checked via `List`), or `cache` (a `watcher` + reflector `Store` per GVK; drift read from the Store, so no per-pass `List`). Default `cache`: measured (`bench/`) to match `trigger` on RSS while removing per-pass `List` apiserver load. |
 | `--watch-debounce` | `LEANCD_WATCH_DEBOUNCE` | `500ms` | controller | collapses a burst of watch events (a reconnect `InitApply` burst, or a rapid edit storm) into one reconcile pass |
+| `--dry-run` | — (flag only) | `false` | `sync` | server-side **dry-run** apply: validate without mutating the cluster or advancing state (hooks/prune skipped) |
+| `--log-format` | `LEANCD_LOG_FORMAT` | `text` | all | log output format: `text` (human-readable) or `json` (one JSON object per line, for aggregation). Fixed at startup; `RUST_LOG` still reloads on SIGHUP |
 
 `--poll-interval` and `--git-*-env` are accepted by all subcommands (they are
 part of `CommonArgs`) but only `controller` uses `--poll-interval` in a
@@ -567,6 +605,18 @@ level is `info`. Set `RUST_LOG=debug` for verbose output, or target a module:
 RUST_LOG=leancd=debug,kube=info
 ```
 
+The output format is `text` (human-readable, default) or `json` (one JSON object
+per line) via `--log-format` / `LEANCD_LOG_FORMAT` — JSON suits aggregation in
+Loki/ELK. The `RUST_LOG` filter still reloads on `SIGHUP`; the format is fixed at
+startup.
+
+Apply, prune, and hook outcomes are emitted on the `leancd.audit` target as
+structured records, so you can surface just the audit trail:
+
+```sh
+RUST_LOG=leancd.audit=info,leancd=warn   # audit only, quiet the rest
+```
+
 Structured fields include `error = %e`, `sha`, `full`, `managed`,
 `pruned`, `drift`, and the resource `key`. Each pass logs
 `reconciliation complete` on success.
@@ -620,6 +670,25 @@ nothing (the safety-net prune only covers GVKs seen in prior state, so a
 re-created deployment will not delete pre-existing resources until it has
 applied and then seen them removed from Git). Git is always the source of
 truth; back up your repository, not the state ConfigMap.
+
+### 9.7 Managing Kubernetes Secrets
+
+Lean CD applies plain YAML, so it will apply a `Secret` exactly as written —
+including a plaintext `data`/`stringData` value. **Do not commit plaintext
+Secrets to Git.** Delegate Secret management to an operator that materializes
+the `Secret` from an external store, and commit only a reference Lean CD can
+apply:
+
+- **External Secrets Operator** — commit an `ExternalSecret` referencing a
+  backend (Vault, AWS/GCP/Azure Secrets, 1Password…); ESO writes the `Secret`.
+  Lean CD can manage the `ExternalSecret` itself (it is just YAML).
+- **Sealed Secrets** — commit an encrypted `SealedSecret`; the Bitnami
+  controller decrypts it into a `Secret` in-cluster.
+- **SOPS** (age/GPG) — keep encrypted manifests in Git; decrypt in CI before
+  Lean CD sees them, or run a sidecar that decrypts into the synced path.
+
+Whichever you choose, the `Secret` Lean CD ultimately applies should come from
+the operator, not a plaintext file under `--path`.
 
 ## 10. Troubleshooting
 

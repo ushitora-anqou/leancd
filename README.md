@@ -38,6 +38,11 @@ by an automated benchmark (see [bench/](bench/)).
 - Metrics exported over OTLP/HTTP (push), including `leancd_rss_bytes` and
   `leancd_health_status`; a ready Grafana dashboard ships in the chart
   ([`charts/leancd/dashboards/`](charts/leancd/dashboards/)).
+- **Operations CLI**: `leancd diff` prints the desired-vs-live drift (read-only),
+  `sync --dry-run` validates via a server-side dry-run (no mutation), and
+  `leancd rollback [--to <sha>]` re-syncs to a past commit.
+- **Structured audit log** (`leancd.audit` target) of every apply/prune/hook
+  outcome, plus `--log-format json` for aggregation in Loki/ELK.
 - Handles **all** resource kinds, including CRDs and cluster-scoped resources.
 
 ## Non-goals (kept out to stay small and light)
@@ -63,6 +68,8 @@ leancd controller [flags]      run as a long-lived controller (deploy this)
 leancd sync    [flags]            run one reconciliation pass, then exit
 leancd status  [flags]            print the last recorded sync state
 leancd health  [flags]            check sync health for exec probes, then exit
+leancd diff    [flags]            print the desired-vs-live drift (read-only)
+leancd rollback [flags] [--to S]  re-sync to a past commit (temporary rollback)
 ```
 
 All configuration is supplied via flags (or `LEANCD_*` environment variables).
@@ -90,6 +97,8 @@ Key flags:
 | `--lock-lease-duration-secs` | `LEANCD_LOCK_LEASE_DURATION_SECS` | 60 | reconcile-exclusion Lease lifetime (s); concurrent controller+sync passes are serialized via a Lease (one at a time) |
 | `--lock-wait-timeout-secs` | `LEANCD_LOCK_WAIT_TIMEOUT_SECS` | 30 | seconds to wait for the reconcile Lease when another pass holds it before skipping with a "busy" INFO log (not an error) |
 | `--namespace` | `LEANCD_NAMESPACE` | default | Lean CD's namespace |
+| `--dry-run` | — (flag only) | false | `sync` only: server-side dry-run apply, no mutation/state |
+| `--log-format` | `LEANCD_LOG_FORMAT` | text | `text` or `json` (structured, one object per line) log output |
 
 For the complete flag and environment-variable reference, authentication modes,
 metrics, tuning, and troubleshooting, see
@@ -120,11 +129,20 @@ HTTP listener of its own). The default image resolves to `Chart.appVersion`, so
 no `image.*` override is needed for the published build. Override `config.*`
 values for your repository.
 
-For a tighter production posture, install with `--set rbac.namespaced=true` to
-bind Lean CD's permissions to selected namespaces (RoleBindings) and ship a
-default-deny `NetworkPolicy`. The Grafana dashboard ships as a
-`grafana_dashboard`-labeled ConfigMap (`--set dashboards.enabled=true`, on by
-default).
+For a tighter production posture:
+- a **PodDisruptionBudget** (`minAvailable: 1`, on by default) protects the
+  single replica during node drains — disable only with >1 replica;
+- a **NetworkPolicy** (default-deny ingress; egress limited to kube-dns, the API
+  server, Git, and the OTLP collector) is generated in **both** RBAC modes —
+  tighten `networkPolicy.kubeApiCidr` / `networkPolicy.egressCidr` to your CIDRs;
+- `--set rbac.namespaced=true` additionally binds Lean CD's permissions to its
+  namespace only (a RoleBinding instead of a cluster-wide ClusterRoleBinding);
+- `--set priorityClass.enabled=true` opts into a high PriorityClass so the
+  controller is among the last to be evicted under node pressure;
+- set `image.pullSecrets` for a private / air-gapped registry.
+
+The Grafana dashboard ships as a `grafana_dashboard`-labeled ConfigMap
+(`--set dashboards.enabled=true`, on by default).
 
 To install from a local checkout (e.g. development), point `helm` at the chart
 directory: `helm install leancd charts/leancd ...`. See

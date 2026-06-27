@@ -46,6 +46,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mode `on`, gated against `RSS_BUDGET_MIB`. `bench/gen-manifests.sh` gains
   `BENCH_DEP_REPLICAS` to scale the Pod fan-out per Deployment.
 
+- **`leancd diff`**: a read-only subcommand that prints the drift between the
+  desired manifests (at the current Git HEAD) and the live cluster — a
+  pre-apply review gate. No apply, no state change, no Lease.
+- **`sync --dry-run`**: validates the desired set via a server-side **dry-run**
+  apply and reports what would change, without mutating the cluster or
+  persisting state. Hooks and pruning are skipped. An explicit flag (no env
+  var) since a dry run is read-only.
+- **`leancd rollback`** (`[--to <sha>]`): checks out a past commit (a specific
+  SHA, or `HEAD^` when `--to` is omitted) and re-syncs to it, deepening the
+  shallow clone as needed. A **temporary** rollback — the next controller pass
+  reconverges to the tracked branch HEAD.
+- **`--log-format`** (`text`/`json`, env `LEANCD_LOG_FORMAT`, default `text`):
+  structured JSON-per-line logs for aggregation in Loki/ELK; the `RUST_LOG`
+  filter still reloads on SIGHUP. Enables the `tracing-subscriber` `json` feature.
+- **Audit logging** (`leancd.audit` target): apply/prune/hook outcomes are
+  emitted as structured `info!` records, filterable via
+  `RUST_LOG=leancd.audit=info`.
+- **Hardened Deployment** (Helm chart): a `PodDisruptionBudget` (default
+  `minAvailable: 1`), an opt-in `PriorityClass`, a `startupProbe` (so a slow
+  first clone/discovery is not killed by liveness), `imagePullSecrets` for
+  private registries, and a `NetworkPolicy` generated in **both** RBAC modes
+  (`networkPolicy.enabled`, default true). `values.schema.json` now covers every
+  value for type-safe `helm lint`.
+- **Secret management guidance**: the user manual documents delegating Secret
+  management to External Secrets Operator / Sealed Secrets (Lean CD applies
+  plain YAML, so Secrets should not be committed in plaintext).
+
 ### Changed
 
 - **Migrated to Rust edition 2024**: `Cargo.toml` now sets `edition = "2024"`
