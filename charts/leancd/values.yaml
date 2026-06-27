@@ -8,6 +8,9 @@ image:
   # (see templates/deployment.yaml); set image.tag explicitly to override.
   repository: ghcr.io/ushitora-anqou/leancd
   pullPolicy: IfNotPresent
+  # Optional imagePullSecrets for a private / air-gapped registry.
+  # pullSecrets:
+  #   - name: my-registry-secret
 
 # --- Namespace ---
 namespace:
@@ -29,11 +32,13 @@ rbac:
   clusterRoleName: leancd
   namespacedClusterRoleName: leancd-namespaced
 
-# --- NetworkPolicy (rbac.namespaced=true only) ---
-# leancd needs egress to kube-dns, the API server, the Git host, and the OTLP
-# collector. NetworkPolicy cannot select by FQDN, so tighten the CIDRs to your
-# environment before production use.
+# --- NetworkPolicy ---
+# Generated when `enabled` is true (default). It restricts egress to kube-dns,
+# the API server, the Git host, and the OTLP collector, and denies ingress
+# (leancd exposes no port). NetworkPolicy cannot select by FQDN, so tighten the
+# CIDRs to your environment before production use. Generated in both RBAC modes.
 networkPolicy:
+  enabled: true                    # set false to skip the NetworkPolicy entirely
   kubeApiCidr: 10.0.0.0/8         # narrow to your cluster's service CIDR
   kubeApiPort: 443
   egressCidr: 0.0.0.0/0           # Git host(s) + OTLP collector; tighten before production
@@ -108,6 +113,13 @@ containerSecurityContext:
     drop: ["ALL"]
 
 # --- Probes (`leancd health`: exit 0=fresh, 1=never, 2=stale, 3=failing) ---
+# A startup probe so a slow first run (large repo clone, CRD discovery) is not
+# killed by liveness before it can report healthy; it hands off to liveness.
+startupProbe:
+  exec:
+    command: ["leancd", "health"]
+  periodSeconds: 10
+  failureThreshold: 30            # up to ~5 min for the initial git clone
 livenessProbe:
   exec:
     command: ["leancd", "health"]
@@ -124,3 +136,19 @@ readinessProbe:
 # --- emptyDir /tmp (shallow checkout + SSH-key temp file stay writable under a read-only root) ---
 tmpVolume:
   enabled: true
+
+# --- PodDisruptionBudget ---
+# A single-replica Deployment is protected from voluntary eviction (node drains,
+# cluster-autoscaler) when minAvailable: 1. Disable only if you run >1 replica.
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# --- PriorityClass (optional) ---
+# A high priority keeps the controller from being evicted under node pressure.
+# Disabled by default; opt in on production clusters. `value` is the priority
+# (higher = more important; `system-node-critical` is 2000000000).
+priorityClass:
+  enabled: false
+  name: leancd-critical
+  value: 1000000

@@ -1,0 +1,14 @@
+{{- if .Values.priorityClass.enabled }}
+# A high priority so the controller is among the last to be evicted under node
+# pressure (the continuous-delivery loop should keep running). Opt-in: disabled
+# by default. `value` is the priority; system-node-critical is 2000000000.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.priorityClass.name }}
+  labels:
+    {{- include "leancd.labels" . | nindent 4 }}
+value: {{ .Values.priorityClass.value }}
+globalDefault: false
+description: "Priority for the leancd continuous-delivery controller."
+{{- end }}

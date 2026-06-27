@@ -1,0 +1,17 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+# Protect the single-replica Deployment from voluntary disruption (node drains,
+# cluster-autoscaler). With minAvailable: 1 a drain that would leave zero
+# healthy Pods is blocked, so the controller stays available during maintenance.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: leancd
+  namespace: {{ include "leancd.namespace" . }}
+  labels:
+    {{- include "leancd.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "leancd.selectorLabels" . | nindent 6 }}
+{{- end }}

@@ -165,8 +165,15 @@
             grep -q "kind: Deployment" cluster.yaml
             grep -q "kind: ClusterRoleBinding" cluster.yaml
             grep -q "kind: Namespace" cluster.yaml
-            if grep -q "kind: NetworkPolicy" cluster.yaml; then
-              echo "unexpected NetworkPolicy in cluster mode" >&2
+            # A NetworkPolicy ships in both RBAC modes by default
+            # (networkPolicy.enabled=true), restricting egress.
+            grep -q "kind: NetworkPolicy" cluster.yaml
+            # A PodDisruptionBudget ships by default too (single replica).
+            grep -q "kind: PodDisruptionBudget" cluster.yaml
+            # Setting networkPolicy.enabled=false omits the NetworkPolicy.
+            helm template leancd charts/leancd --set networkPolicy.enabled=false > nonp.yaml
+            if grep -q "kind: NetworkPolicy" nonp.yaml; then
+              echo "unexpected NetworkPolicy with networkPolicy.enabled=false" >&2
               exit 1
             fi
             # Default image tracks Chart.AppVersion from the published GHCR repo,

@@ -23,3 +23,13 @@ sidecar (VictoriaMetrics / grafana helm charts with sidecar dashboards enabled)
 imports it automatically; otherwise import charts/leancd/dashboards/leancd-overview.json
 manually from Dashboards -> New -> Import.
 {{- end }}
+
+Production posture:
+  - A PodDisruptionBudget (minAvailable: 1) guards the single replica against
+    voluntary eviction (node drains). Disable only when running >1 replica.
+{{- if not .Values.priorityClass.enabled }}
+  - PriorityClass is opt-in: set priorityClass.enabled=true to keep the
+    controller from being evicted under node pressure.
+{{- end }}
+  - The NetworkPolicy restricts egress — tighten networkPolicy.kubeApiCidr and
+    networkPolicy.egressCidr to your service/Git CIDRs before production.

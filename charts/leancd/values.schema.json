@@ -10,6 +10,14 @@
         "pullPolicy": {
           "type": "string",
           "enum": ["Always", "IfNotPresent", "Never"]
+        },
+        "pullSecrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "required": ["name"]
+          }
         }
       }
     },
@@ -35,6 +43,60 @@
         "namespacedClusterRoleName": { "type": "string" }
       }
     },
+    "networkPolicy": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "kubeApiCidr": { "type": "string" },
+        "kubeApiPort": { "type": "integer" },
+        "egressCidr": { "type": "string" },
+        "gitPorts": { "type": "array", "items": { "type": "integer" } },
+        "otlpPort": { "type": "integer" },
+        "dns": {
+          "type": "object",
+          "properties": {
+            "namespace": { "type": "string" },
+            "podSelector": { "type": "object" },
+            "port": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "git": {
+      "type": "object",
+      "properties": {
+        "credentialsSecretName": { "type": "string" },
+        "credentialsOptional": { "type": "boolean" }
+      }
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "repoUrl": { "type": "string" },
+        "branch": { "type": "string" },
+        "path": { "type": "string" },
+        "namespace": { "type": "string" },
+        "pollInterval": { "type": "string" },
+        "workDir": { "type": "string" },
+        "lockLeaseDurationSecs": { "type": "string" },
+        "lockWaitTimeoutSecs": { "type": "string" },
+        "cacheMaxObjectBytes": { "type": "string" }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "otlpEndpoint": { "type": "string" },
+        "otlpProtocol": { "type": "string" }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "properties": {
+        "limits": { "type": "object" },
+        "requests": { "type": "object" }
+      }
+    },
     "dashboards": {
       "type": "object",
       "properties": {
@@ -43,9 +105,34 @@
         "label": { "type": "string" }
       }
     },
-    "config": { "type": "object" },
-    "metrics": { "type": "object" },
-    "resources": { "type": "object" },
-    "extraEnv": { "type": "array" }
+    "extraEnv": { "type": "array" },
+    "replicaCount": { "type": "integer" },
+    "strategy": { "type": "string" },
+    "terminationGracePeriodSeconds": { "type": "integer" },
+    "args": { "type": "array", "items": { "type": "string" } },
+    "podSecurityContext": { "type": "object" },
+    "containerSecurityContext": { "type": "object" },
+    "livenessProbe": { "type": "object" },
+    "readinessProbe": { "type": "object" },
+    "startupProbe": { "type": "object" },
+    "tmpVolume": {
+      "type": "object",
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minAvailable": { "type": ["integer", "string"] }
+      }
+    },
+    "priorityClass": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "name": { "type": "string" },
+        "value": { "type": "integer" }
+      }
+    }
   }
 }

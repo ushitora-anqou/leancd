@@ -1,4 +1,4 @@
-{{- if .Values.rbac.namespaced }}
+{{- if .Values.networkPolicy.enabled }}
 # NetworkPolicy (namespaced posture only): leancd needs egress to (1) kube-dns
 # for name resolution, (2) the Kubernetes API server, (3) the Git repository,
 # and (4) the OTLP metrics collector. No ingress is needed (leancd exposes no
