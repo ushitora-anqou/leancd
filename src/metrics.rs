@@ -8,10 +8,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use opentelemetry::metrics::{Counter, Meter, ObservableGauge};
 use opentelemetry::KeyValue;
-use opentelemetry_sdk::metrics::SdkMeterProvider;
+use opentelemetry::metrics::{Counter, Meter, ObservableGauge};
 use opentelemetry_sdk::Resource;
+use opentelemetry_sdk::metrics::SdkMeterProvider;
 
 use crate::error::{Error, Result};
 
@@ -225,8 +225,8 @@ mod tests {
     use super::*;
 
     use opentelemetry::metrics::MeterProvider as _;
-    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
     use opentelemetry_sdk::metrics::InMemoryMetricExporter;
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics};
 
     /// The headline guarantee: even the test process itself must sit well under
     /// the RSS budget. This is a sanity check for the measurement code;

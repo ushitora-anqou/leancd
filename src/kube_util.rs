@@ -233,8 +233,7 @@ mod tests {
             serde_json::from_slice(&serde_json::to_vec(&obj).expect("serialize DynamicObject"))
                 .expect("parse wire body");
         assert_eq!(
-            wire["metadata"]["annotations"],
-            manifest["metadata"]["annotations"],
+            wire["metadata"]["annotations"], manifest["metadata"]["annotations"],
             "SSA patch body must preserve metadata.annotations through the DynamicObject round-trip"
         );
         assert_eq!(

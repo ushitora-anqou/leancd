@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::config::{parse_duration, Config};
+use crate::config::{Config, parse_duration};
 use crate::error::Result;
 
 /// Lean CD — a minimal, low-memory Kubernetes CD controller.
@@ -292,9 +292,11 @@ mod tests {
     fn cache_max_object_bytes_reads_from_env() {
         // clap's `env =` attribute fills the flag from
         // LEANCD_CACHE_MAX_OBJECT_BYTES when --cache-max-object-bytes is absent.
-        std::env::set_var("LEANCD_CACHE_MAX_OBJECT_BYTES", "8192");
+        // SAFETY: test-only; no concurrent test writes these env vars, so set_var/remove_var cannot race on environ.
+        unsafe { std::env::set_var("LEANCD_CACHE_MAX_OBJECT_BYTES", "8192") };
         let cli = Cli::try_parse_from(["leancd", "sync", "--repo-url", "https://x"]).unwrap();
-        std::env::remove_var("LEANCD_CACHE_MAX_OBJECT_BYTES");
+        // SAFETY: test-only; no concurrent test writes these env vars, so set_var/remove_var cannot race on environ.
+        unsafe { std::env::remove_var("LEANCD_CACHE_MAX_OBJECT_BYTES") };
         let args = match cli.command {
             Command::Sync(a) => a,
             _ => panic!("expected the sync subcommand"),

@@ -26,9 +26,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
 use kube::Client;
@@ -49,7 +49,7 @@ async fn main() -> anyhow::Result<()> {
     // the log level (e.g. to `debug`) at runtime without a redeploy.
     #[cfg(unix)]
     tokio::spawn(async move {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sighup = match signal(SignalKind::hangup()) {
             Ok(s) => s,
             Err(e) => {

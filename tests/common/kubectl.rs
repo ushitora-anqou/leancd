@@ -119,9 +119,5 @@ pub fn pod_name_by_selector(ns: &str, selector: &str) -> Option<String> {
         .output()
         .ok()?;
     let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name)
-    }
+    if name.is_empty() { None } else { Some(name) }
 }

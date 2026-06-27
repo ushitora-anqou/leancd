@@ -383,15 +383,18 @@ mod tests {
 
     #[test]
     fn authed_url_embeds_https_basic_auth() {
-        // Unique env var names avoid races with concurrent tests.
-        std::env::set_var("LEANCD_TEST_AUTH_USER", "alice");
-        std::env::set_var("LEANCD_TEST_AUTH_PASS", "s3cr3t");
+        // SAFETY: test-only; no concurrent test writes these env vars, so set_var/remove_var cannot race on environ.
+        unsafe { std::env::set_var("LEANCD_TEST_AUTH_USER", "alice") };
+        // SAFETY: test-only; no concurrent test writes these env vars, so set_var/remove_var cannot race on environ.
+        unsafe { std::env::set_var("LEANCD_TEST_AUTH_PASS", "s3cr3t") };
         let mut cfg = test_config("https://github.com/o/r");
         cfg.git_username_env = "LEANCD_TEST_AUTH_USER".into();
         cfg.git_password_env = "LEANCD_TEST_AUTH_PASS".into();
         let url = cfg.authed_url().unwrap();
-        std::env::remove_var("LEANCD_TEST_AUTH_USER");
-        std::env::remove_var("LEANCD_TEST_AUTH_PASS");
+        // SAFETY: test-only; no concurrent test writes these env vars, so set_var/remove_var cannot race on environ.
+        unsafe { std::env::remove_var("LEANCD_TEST_AUTH_USER") };
+        // SAFETY: test-only; no concurrent test writes these env vars, so set_var/remove_var cannot race on environ.
+        unsafe { std::env::remove_var("LEANCD_TEST_AUTH_PASS") };
         assert_eq!(url, "https://alice:s3cr3t@github.com/o/r");
     }
 

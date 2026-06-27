@@ -97,19 +97,19 @@ async fn git_change_detection_and_steady_state() {
     let r1 = common::leancd::sync(&args);
     assert!(r1.success, "1st sync failed: {}", r1.stderr);
     assert!(common::kubectl::exists("default", "configmap", "cs-cm"));
-    let rv1 = common::kubectl::get_json("default", "configmap", "cs-cm")["metadata"]
-        ["resourceVersion"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let rv1 =
+        common::kubectl::get_json("default", "configmap", "cs-cm")["metadata"]["resourceVersion"]
+            .as_str()
+            .unwrap()
+            .to_string();
 
     let r2 = common::leancd::sync(&args);
     assert!(r2.success, "2nd sync failed: {}", r2.stderr);
-    let rv2 = common::kubectl::get_json("default", "configmap", "cs-cm")["metadata"]
-        ["resourceVersion"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let rv2 =
+        common::kubectl::get_json("default", "configmap", "cs-cm")["metadata"]["resourceVersion"]
+            .as_str()
+            .unwrap()
+            .to_string();
     assert_eq!(
         rv1, rv2,
         "steady-state sync must not re-apply (resourceVersion changed)"
@@ -1376,9 +1376,10 @@ async fn graceful_shutdown_finishes_pass() {
     );
     assert!(terminated, "pod did not terminate after SIGTERM");
 
-    let st = common::kubectl::get_json("leancd", "pod", &pod)["status"]["containerStatuses"][0]
-        ["state"]["terminated"]
-        .clone();
+    let st =
+        common::kubectl::get_json("leancd", "pod", &pod)["status"]["containerStatuses"][0]["state"]
+            ["terminated"]
+            .clone();
     assert_eq!(
         st["exitCode"].as_i64(),
         Some(0),
@@ -2279,17 +2280,21 @@ async fn helm_install_deploys_controller() {
         "--from-literal=GIT_USERNAME=leancd",
         "--from-literal=GIT_PASSWORD=leancd-e2e-pass",
     ]);
-    common::helm::install(release, ns, &[
-        "namespace.create=false",
-        "image.repository=leancd",
-        "image.tag=latest",
-        "image.pullPolicy=IfNotPresent",
-        "config.repoUrl=http://forgejo.forgejo.svc.cluster.local:3000/leancd/controller-idle.git",
-        "config.pollInterval=1h",
-        "metrics.otlpEndpoint=http://otel-collector.leancd.svc.cluster.local:4318",
-        "config.namespace=leancd-helm-e2e",
-        "namespace.name=leancd-helm-e2e",
-    ]);
+    common::helm::install(
+        release,
+        ns,
+        &[
+            "namespace.create=false",
+            "image.repository=leancd",
+            "image.tag=latest",
+            "image.pullPolicy=IfNotPresent",
+            "config.repoUrl=http://forgejo.forgejo.svc.cluster.local:3000/leancd/controller-idle.git",
+            "config.pollInterval=1h",
+            "metrics.otlpEndpoint=http://otel-collector.leancd.svc.cluster.local:4318",
+            "config.namespace=leancd-helm-e2e",
+            "namespace.name=leancd-helm-e2e",
+        ],
+    );
 
     // The chart renders fixed resource names; Deployment/leancd must go Available.
     let ok = common::wait::wait_for(

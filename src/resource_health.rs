@@ -619,7 +619,7 @@ impl HealthSummary {
 mod tests {
     use super::*;
     use crate::manifest::RawManifest;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
     /// Build a live `DynamicObject` carrying `extra` merged at the top level
     /// (so `spec`/`status` land under `data` via flatten).
@@ -648,10 +648,10 @@ mod tests {
         serde_json::from_value(v).expect("live obj parses")
     }
 
-    fn deploy(name: &str, ns: &str, spec: Value, status: Value, gen: i64) -> DynamicObject {
+    fn deploy(name: &str, ns: &str, spec: Value, status: Value, generation: i64) -> DynamicObject {
         let mut o = live("apps/v1", "Deployment", name, Some(ns), json!({}));
         o.data = json!({ "spec": spec, "status": status });
-        o.metadata.generation = Some(gen);
+        o.metadata.generation = Some(generation);
         o
     }
 

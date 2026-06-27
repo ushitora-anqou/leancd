@@ -35,8 +35,8 @@ use futures::StreamExt;
 use kube::api::Api;
 use kube::client::Client;
 use kube::core::DynamicObject;
-use kube::runtime::watcher::{self, Config as WatcherConfig};
 use kube::runtime::WatchStreamExt;
+use kube::runtime::watcher::{self, Config as WatcherConfig};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 

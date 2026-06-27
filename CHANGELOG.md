@@ -48,6 +48,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Migrated to Rust edition 2024**: `Cargo.toml` now sets `edition = "2024"`
+  with `rust-version = "1.85"`. Edition 2024 breaking changes are handled
+  conservatively with no production-code behavior change: test-only
+  `std::env::set_var`/`std::env::remove_var` calls are wrapped in `unsafe`
+  blocks (these became `unsafe` functions in edition 2024), and a test
+  helper's `gen` parameter was renamed to `generation` (`gen` is now a
+  reserved keyword). The project uses no `unsafe`, `extern`, RPIT, or
+  `static mut` references, so the other edition 2024 breaking changes do not
+  apply.
 - **RSS budget tightened to 50 MiB** (was 100). The headline gate enforced by
   `bench/bench.sh` is now `RSS_BUDGET_MIB=50` (default); `bench/scale.sh`
   continues to forward 100. Lean CD measures ≈16 MiB self RSS at the default

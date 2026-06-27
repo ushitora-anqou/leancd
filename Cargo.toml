@@ -1,7 +1,8 @@
 [package]
 name = "leancd"
 version = "0.1.1"
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 license = "Apache-2.0"
 build = "build.rs"
 
@@ -60,6 +61,6 @@ url = "2"
 # The `testing` feature unlocks `InMemoryMetricExporter`, the SDK's supported
 # metric test path in 0.32 (the old `ManualReader`/`MetricReader` plumbing became
 # feature-gated behind `experimental_metrics_custom_reader`). It is a
-# dev-dependency so resolver 2 (edition 2021) keeps it out of the release
+# dev-dependency so resolver 2 (edition 2024) keeps it out of the release
 # binary — the RSS budget is unaffected.
 opentelemetry_sdk = { version = "0.32", features = ["testing"] }

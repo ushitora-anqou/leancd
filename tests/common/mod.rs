@@ -18,5 +18,5 @@ pub mod portforward;
 pub mod ssh;
 pub mod wait;
 
-pub use fixture::{run, Fixture};
+pub use fixture::{Fixture, run};
 pub use forgejo::Forgejo;

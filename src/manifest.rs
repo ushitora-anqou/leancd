@@ -6,7 +6,7 @@
 //! to any resource kind, including CRDs.
 
 #![allow(deprecated)] // serde_yaml is maintenance-mode but is the stable,
-                      // streaming-capable YAML parser we depend on.
+// streaming-capable YAML parser we depend on.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
