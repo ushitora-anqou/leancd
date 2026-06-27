@@ -42,6 +42,10 @@ pub struct Reconciler {
     /// `List`ing. Empty (and unused) in `Trigger`/`Off` modes. Each
     /// `LightweightStore` is behind an `Arc<Mutex>` shared with the watch driver.
     pub cache_stores: Arc<Mutex<HashMap<watch::GvkKey, Arc<Mutex<watch::LightweightStore>>>>>,
+    /// When set, force the git checkout to this target instead of the tracked
+    /// branch HEAD. Used by `leancd rollback`; `None` (the controller and
+    /// `sync`) tracks the branch as usual.
+    pub force_target: Option<git_sync::CheckoutTarget>,
 }
 
 impl Reconciler {
@@ -61,6 +65,14 @@ impl Reconciler {
                 Err(e)
             }
         }
+    }
+
+    /// Validate the desired state via a server-side dry-run apply (no mutation,
+    /// no state, no metrics, no hooks/prune). Acquires the reconcile Lease like
+    /// `run_once` so the git checkout stays consistent, then short-circuits in
+    /// `reconcile_inner` after the dry-run apply. Used by `sync --dry-run`.
+    pub async fn dry_run(&self) -> Result<()> {
+        self.reconcile().await
     }
 
     async fn record_error(&self, e: &Error) -> Result<()> {
@@ -105,7 +117,18 @@ impl Reconciler {
             .filter(|s| !s.is_empty());
         let prev_applied = prev.as_ref().map(|s| s.applied.clone()).unwrap_or_default();
 
-        let sync = git_sync::sync(&self.cfg, prev_sha.as_deref()).await?;
+        let target = self
+            .force_target
+            .clone()
+            .unwrap_or(git_sync::CheckoutTarget::Branch);
+        // A forced target (rollback) always re-applies: ignore the persisted
+        // last_sha so checkout reports a change and the pass is a full apply.
+        let prev_sha_ref = if self.force_target.is_some() {
+            None
+        } else {
+            prev_sha.as_deref()
+        };
+        let sync = git_sync::checkout(&self.cfg, prev_sha_ref, &target).await?;
         // The git fetch may have taken a while; refresh the lease so a long
         // pass is not reclaimed as stale mid-flight.
         self.touch_lease(guard).await;
@@ -145,6 +168,19 @@ impl Reconciler {
         // has an applied set. pre-delete/post-delete hooks wrap the prune.
         let teardown = classified.main.is_empty() && !prev_applied.is_empty();
 
+        if self.cfg.dry_run {
+            // Validate the desired state via a server-side dry-run apply only —
+            // no hooks, no prune, no state/metrics update. Early return so a
+            // dry run never mutates the cluster or advances sync state.
+            self.apply_all(&classified.main, true).await?;
+            tracing::info!(
+                dry_run = true,
+                managed = current_keys.len(),
+                "dry-run validation complete; no changes applied"
+            );
+            return Ok(());
+        }
+
         let mut drifts: Vec<drift::DriftItem> = Vec::new();
         let mut post_error: Option<String> = None;
         let mut pruned = 0usize;
@@ -166,9 +202,17 @@ impl Reconciler {
             if let Some((_, reason)) = pre.failures.first() {
                 return Err(Error::Hook(format!("pre-delete hook failed: {reason}")));
             }
-            pruned = prune::prune(&self.client, &prev_applied, &current_keys, &self.cfg)
-                .await?
-                .len();
+            let pruned_keys =
+                prune::prune(&self.client, &prev_applied, &current_keys, &self.cfg).await?;
+            pruned = pruned_keys.len();
+            for key in &pruned_keys {
+                tracing::info!(
+                    target: "leancd.audit",
+                    action = "prune",
+                    key = ?key,
+                    result = "deleted",
+                );
+            }
             let post = self
                 .hook_phase(
                     guard,
@@ -188,7 +232,7 @@ impl Reconciler {
             if let Some((_, reason)) = pre.failures.first() {
                 return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
             }
-            self.apply_all(&classified.main).await?;
+            self.apply_all(&classified.main, false).await?;
             if self.cfg.health_enabled {
                 health_live = drift::collect_live(&self.client, &classified.main, &self.cfg)
                     .await
@@ -236,7 +280,7 @@ impl Reconciler {
                 if let Some((_, reason)) = pre.failures.first() {
                     return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
                 }
-                self.apply_all(&classified.main).await?;
+                self.apply_all(&classified.main, false).await?;
                 let post = self
                     .hook_phase(
                         guard,
@@ -253,9 +297,17 @@ impl Reconciler {
         let drift_count = drifts.len();
 
         if !teardown {
-            pruned = prune::prune(&self.client, &prev_applied, &current_keys, &self.cfg)
-                .await?
-                .len();
+            let pruned_keys =
+                prune::prune(&self.client, &prev_applied, &current_keys, &self.cfg).await?;
+            pruned = pruned_keys.len();
+            for key in &pruned_keys {
+                tracing::info!(
+                    target: "leancd.audit",
+                    action = "prune",
+                    key = ?key,
+                    result = "deleted",
+                );
+            }
         }
         self.touch_lease(guard).await;
 
@@ -348,8 +400,10 @@ impl Reconciler {
     }
 
     /// Apply every manifest, sharing one API-discovery lookup per resource kind.
-    /// Individual apply failures are logged but do not abort the pass.
-    async fn apply_all(&self, manifests: &[RawManifest]) -> Result<()> {
+    /// Individual apply failures are logged but do not abort the pass. When
+    /// `dry_run` is true each patch is a server-side dry run (no mutation) —
+    /// used by `sync --dry-run` to validate the desired set.
+    async fn apply_all(&self, manifests: &[RawManifest], dry_run: bool) -> Result<()> {
         let mut cache = kube_util::DiscoveryCache::new();
         let mut applied = 0usize;
         let mut failed = 0usize;
@@ -380,12 +434,33 @@ impl Reconciler {
                 &self.cfg.namespace,
                 value,
                 &self.cfg.field_manager,
+                dry_run,
             )
             .await
             {
-                Ok(_) => applied += 1,
+                Ok(_) => {
+                    applied += 1;
+                    tracing::info!(
+                        target: "leancd.audit",
+                        action = "apply",
+                        kind = %m.kind,
+                        name = %m.name,
+                        namespace = ?m.namespace,
+                        dry_run,
+                        result = "applied",
+                    );
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, name = %m.name, kind = %m.kind, "apply failed");
+                    tracing::info!(
+                        target: "leancd.audit",
+                        action = "apply",
+                        kind = %m.kind,
+                        name = %m.name,
+                        namespace = ?m.namespace,
+                        dry_run,
+                        result = "failed",
+                    );
                     failed += 1;
                 }
             }
@@ -411,6 +486,25 @@ impl Reconciler {
         let failed = outcome.failures.len() as u64;
         let succeeded = outcome.attempted.saturating_sub(outcome.failures.len()) as u64;
         self.metrics.record_hooks(label, succeeded, failed);
+        // Audit: one summary line plus one line per failed hook.
+        tracing::info!(
+            target: "leancd.audit",
+            action = "hook",
+            phase = label,
+            attempted = outcome.attempted,
+            succeeded,
+            failed = outcome.failures.len(),
+        );
+        for (key, reason) in &outcome.failures {
+            tracing::info!(
+                target: "leancd.audit",
+                action = "hook",
+                phase = label,
+                key = ?key,
+                result = "failed",
+                reason = %reason,
+            );
+        }
         outcome
     }
 
@@ -579,6 +673,53 @@ fn jittered(delay: Duration) -> Duration {
     delay.mul_f64(jitter_factor())
 }
 
+/// Compute the drift between the desired manifests (at the current Git HEAD)
+/// and the live cluster, and print a human-readable report. Read-only: no
+/// apply, no prune, no state change, no Lease (the git checkout is PID-scoped
+/// and the only API calls are `List`s). Used by `leancd diff`.
+pub async fn diff(client: &kube::client::Client, cfg: &Config) -> Result<()> {
+    // Always fetch the latest HEAD (prev_sha = None forces a fresh fetch).
+    let sync = git_sync::sync(cfg, None).await?;
+    let work_dir = cfg.effective_work_dir();
+    let work = Path::new(&work_dir);
+    let roots = manifest::expand_roots(work, &cfg.path)?;
+    let manifests = manifest::parse_paths(&roots).await?;
+    let classified = hooks::classify(manifests);
+    let (drifts, _live) = drift::detect(client, &classified.main, cfg).await?;
+    print!("{}", render_diff(&sync.sha, &drifts));
+    Ok(())
+}
+
+/// Render a human-readable drift report. Pure: no I/O, unit-testable.
+fn render_diff(sha: &str, drifts: &[drift::DriftItem]) -> String {
+    if drifts.is_empty() {
+        return format!("leancd diff (sha {sha}): in sync — no drift detected\n");
+    }
+    let mut out = format!("leancd diff (sha {sha}): {} drift(s)\n", drifts.len());
+    for d in drifts {
+        out.push_str(&format!(
+            "  {} — {}\n",
+            format_resource_key(&d.key),
+            d.reason
+        ));
+    }
+    out
+}
+
+/// Format a [`prune::ResourceKey`] as `[gvk namespace/name]` (or `[gvk name]`
+/// for cluster-scoped resources) for human-readable output. Pure.
+fn format_resource_key(key: &prune::ResourceKey) -> String {
+    let gvk = if key.group.is_empty() {
+        format!("{}/{}", key.version, key.kind)
+    } else {
+        format!("{}/{}/{}", key.group, key.version, key.kind)
+    };
+    match &key.namespace {
+        Some(ns) => format!("[{gvk} {ns}/{}]", key.name),
+        None => format!("[{gvk} {}]", key.name),
+    }
+}
+
 fn now_epoch() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -691,5 +832,43 @@ mod tests {
         assert_eq!(backoff_delay(base, cap, 1), Duration::from_secs(5));
         assert_eq!(backoff_delay(base, cap, 2), Duration::from_secs(10));
         assert_eq!(backoff_delay(base, cap, 3), Duration::from_secs(20));
+    }
+
+    fn drift_key(group: &str, kind: &str, name: &str, ns: Option<&str>) -> drift::DriftItem {
+        drift::DriftItem {
+            key: prune::ResourceKey {
+                group: group.to_string(),
+                version: "v1".to_string(),
+                kind: kind.to_string(),
+                namespace: ns.map(String::from),
+                name: name.to_string(),
+            },
+            reason: "spec differs from desired state".to_string(),
+        }
+    }
+
+    #[test]
+    fn render_diff_no_drift_reports_in_sync() {
+        let s = render_diff("abc123", &[]);
+        assert!(s.contains("in sync"), "{s}");
+        assert!(s.contains("abc123"), "{s}");
+    }
+
+    #[test]
+    fn render_diff_lists_each_drift_with_gvk_and_reason() {
+        let drifts = vec![drift_key("apps", "Deployment", "web", Some("ns")), {
+            let mut d = drift_key("", "ConfigMap", "global", None);
+            d.reason = "missing in cluster".into();
+            d
+        }];
+        let s = render_diff("deadbeef", &drifts);
+        assert!(s.contains("2 drift"), "{s}");
+        assert!(s.contains("apps/v1/Deployment"), "{s}");
+        assert!(s.contains("ns/web"), "{s}");
+        assert!(s.contains("v1/ConfigMap"), "{s}");
+        assert!(s.contains("global"), "{s}");
+        assert!(s.contains("spec differs"), "{s}");
+        assert!(s.contains("missing"), "{s}");
+        assert!(s.contains("deadbeef"), "{s}");
     }
 }

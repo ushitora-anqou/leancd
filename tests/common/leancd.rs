@@ -67,6 +67,16 @@ pub fn health(args: &[String]) -> RunResult {
     exec_leancd("health", args)
 }
 
+/// Run `leancd diff [args]` in the Lean CD Deployment (read-only drift report).
+pub fn diff(args: &[String]) -> RunResult {
+    exec_leancd("diff", args)
+}
+
+/// Run `leancd rollback [args]` in the Lean CD Deployment.
+pub fn rollback(args: &[String]) -> RunResult {
+    exec_leancd("rollback", args)
+}
+
 fn exec_leancd(sub: &str, args: &[String]) -> RunResult {
     let mut argv: Vec<String> = vec![
         "exec".into(),

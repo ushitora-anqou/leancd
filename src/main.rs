@@ -39,44 +39,13 @@ use opentelemetry::metrics::MeterProvider as _;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    let builder = tracing_subscriber::fmt()
-        .with_env_filter(log_filter())
-        .with_filter_reloading();
-    let reload_handle = builder.reload_handle();
-    builder.init();
-
-    // Reload the log filter from RUST_LOG on SIGHUP so operators can change
-    // the log level (e.g. to `debug`) at runtime without a redeploy.
-    #[cfg(unix)]
-    tokio::spawn(async move {
-        use tokio::signal::unix::{SignalKind, signal};
-        let mut sighup = match signal(SignalKind::hangup()) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "failed to install SIGHUP handler; runtime log reload disabled"
-                );
-                return;
-            }
-        };
-        loop {
-            if sighup.recv().await.is_none() {
-                break;
-            }
-            match reload_handle.reload(log_filter()) {
-                Ok(()) => tracing::info!("log filter reloaded from RUST_LOG"),
-                Err(e) => tracing::warn!(error = %e, "failed to reload log filter"),
-            }
-        }
-    });
-    #[cfg(not(unix))]
-    let _ = reload_handle;
-
     let cli = Cli::parse();
+    init_logger(&cli.log_format);
+
     tracing::info!(
         version = %crate::version::VERSION,
         git_sha = %crate::version::GIT_SHA,
+        log_format = %cli.log_format,
         "leancd"
     );
     match cli.command {
@@ -96,8 +65,52 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Diff(common) => run_diff(common.to_config()?).await?,
+        Command::Rollback(rb) => run_rollback(rb.common.to_config()?, rb.to).await?,
     }
     Ok(())
+}
+
+/// Print the diff between desired manifests and the live cluster (read-only).
+/// No apply, no state change. Body lands in a later step (`reconcile::diff`).
+async fn run_diff(cfg: config::Config) -> Result<()> {
+    let work_dir = cfg.effective_work_dir();
+    let client = Client::try_default().await?;
+    let res = reconcile::diff(&client, &cfg).await;
+    // Best-effort cleanup of the PID-scoped shallow checkout (like `sync`).
+    if let Err(e) = tokio::fs::remove_dir_all(&work_dir).await {
+        tracing::warn!(error = %e, dir = %work_dir, "failed to clean up PID-scoped work dir");
+    }
+    res
+}
+
+/// Check out a past commit (`target`, or HEAD^ when `None`) and re-sync to it.
+/// A temporary rollback — the next controller pass reconverges to branch HEAD.
+async fn run_rollback(cfg: config::Config, target: Option<String>) -> Result<()> {
+    let work_dir = cfg.effective_work_dir();
+    let client = Client::try_default().await?;
+    let provider = metrics::init_meter_provider()?;
+    let meter = provider.meter("leancd");
+    let metrics = Arc::new(metrics::Metrics::new(&meter));
+    let force_target = git_sync::CheckoutTarget::from_opt(target.as_deref());
+    let recon = reconcile::Reconciler {
+        client,
+        cfg,
+        metrics,
+        stop: Arc::new(AtomicBool::new(false)),
+        last_gvks: Arc::new(Mutex::new(HashSet::new())),
+        cache_stores: Arc::new(Mutex::new(HashMap::new())),
+        force_target: Some(force_target),
+    };
+    let res = recon.run_once().await;
+    if let Err(e) = provider.shutdown() {
+        tracing::warn!(error = %e, "failed to flush metrics on shutdown");
+    }
+    // Best-effort cleanup of the PID-scoped shallow checkout (like `sync`).
+    if let Err(e) = tokio::fs::remove_dir_all(&work_dir).await {
+        tracing::warn!(error = %e, dir = %work_dir, "failed to clean up PID-scoped work dir");
+    }
+    res
 }
 
 /// Run as a long-lived controller: OTLP metric export + polling reconciliation loop.
@@ -116,6 +129,7 @@ async fn run_controller(cfg: config::Config) -> Result<()> {
         stop: stop.clone(),
         last_gvks: Arc::new(Mutex::new(HashSet::new())),
         cache_stores: Arc::new(Mutex::new(HashMap::new())),
+        force_target: None,
     };
     let mut recon_handle = tokio::spawn(async move {
         let _ = recon.run_loop().await;
@@ -148,6 +162,7 @@ async fn run_sync(cfg: config::Config) -> Result<()> {
     // Compute the PID-scoped work dir now; `cfg` is moved into the Reconciler
     // below, and we need the path to clean it up after the pass.
     let work_dir = cfg.effective_work_dir();
+    let dry_run = cfg.dry_run;
     let client = Client::try_default().await?;
     let provider = metrics::init_meter_provider()?;
     let meter = provider.meter("leancd");
@@ -159,8 +174,13 @@ async fn run_sync(cfg: config::Config) -> Result<()> {
         stop: Arc::new(AtomicBool::new(false)),
         last_gvks: Arc::new(Mutex::new(HashSet::new())),
         cache_stores: Arc::new(Mutex::new(HashMap::new())),
+        force_target: None,
     };
-    let res = recon.run_once().await;
+    let res = if dry_run {
+        recon.dry_run().await
+    } else {
+        recon.run_once().await
+    };
     if let Err(e) = provider.shutdown() {
         tracing::warn!(error = %e, "failed to flush metrics on shutdown");
     }
@@ -206,6 +226,58 @@ async fn run_status(cfg: config::Config) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Initialize the global tracing subscriber. `log_format` selects the output
+/// format: `text` (default, human-readable) or `json` (one JSON object per
+/// line, for structured aggregation in Loki/ELK etc.). The `RUST_LOG` filter
+/// is reloadable at runtime on SIGHUP; the format is fixed at startup.
+fn init_logger(log_format: &str) {
+    use tracing_subscriber::{fmt, prelude::*, reload};
+    let (filter_layer, reload_handle) = reload::Layer::new(log_filter());
+    if log_format.eq_ignore_ascii_case("json") {
+        tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(fmt::layer().json())
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(filter_layer)
+            .with(fmt::layer())
+            .init();
+    }
+
+    // Reload the log filter from RUST_LOG on SIGHUP so operators can change
+    // the log level (e.g. to `debug`) at runtime without a redeploy.
+    #[cfg(unix)]
+    {
+        tokio::spawn(async move {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut sighup = match signal(SignalKind::hangup()) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to install SIGHUP handler; runtime log reload disabled"
+                    );
+                    return;
+                }
+            };
+            loop {
+                if sighup.recv().await.is_none() {
+                    break;
+                }
+                match reload_handle.reload(log_filter()) {
+                    Ok(()) => tracing::info!("log filter reloaded from RUST_LOG"),
+                    Err(e) => tracing::warn!(error = %e, "failed to reload log filter"),
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = reload_handle;
+    }
 }
 
 /// Build the tracing `EnvFilter` from `RUST_LOG`, falling back to `info` when

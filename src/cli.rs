@@ -11,6 +11,12 @@ use crate::error::Result;
 #[derive(Debug, Parser)]
 #[command(name = "leancd", version = crate::version::FULL_VERSION, about)]
 pub struct Cli {
+    /// Log output format: `text` (default, human-readable) or `json` (one JSON
+    /// object per line, for structured aggregation in Loki/ELK etc.). Fixed at
+    /// startup; the `RUST_LOG` filter still reloads on SIGHUP.
+    #[arg(long, global = true, env = "LEANCD_LOG_FORMAT", default_value = "text")]
+    pub log_format: String,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -25,6 +31,26 @@ pub enum Command {
     Status(CommonArgs),
     /// Check sync health and exit (for liveness/readiness exec probes).
     Health(CommonArgs),
+    /// Print the diff between the desired manifests and the live cluster state
+    /// (read-only; no apply, no state change). Equivalent to a drift report.
+    Diff(CommonArgs),
+    /// Check out a past commit and re-sync to it. A **temporary** rollback: the
+    /// next controller pass reconverges to the tracked branch HEAD. `--to`
+    /// selects a specific commit SHA; omit it for the previous commit (HEAD^).
+    /// The shallow checkout is deepened as needed to reach the target.
+    Rollback(RollbackArgs),
+}
+
+/// Arguments for `leancd rollback`: the shared sync flags plus the target
+/// commit to roll back to.
+#[derive(Debug, Args, Clone)]
+pub struct RollbackArgs {
+    #[command(flatten)]
+    pub common: CommonArgs,
+
+    /// Commit SHA to roll back to. Omit for the previous commit (HEAD^).
+    #[arg(long)]
+    pub to: Option<String>,
 }
 
 /// Flags shared by all subcommands. These fully configure a single
@@ -150,6 +176,13 @@ pub struct CommonArgs {
     /// metric). Sync completion is unaffected — health is an independent signal.
     #[arg(long, env = "LEANCD_HEALTH_MODE", default_value = "on")]
     pub health_mode: String,
+
+    /// Validate the desired manifests via a server-side **dry-run** apply and
+    /// report what would change, without mutating the cluster or persisting
+    /// state. Hooks and pruning are skipped (no side effects). Only meaningful
+    /// for `sync` (a dry-run is read-only); ignored by the other subcommands.
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
 }
 
 impl CommonArgs {
@@ -185,6 +218,7 @@ impl CommonArgs {
             watch_debounce: parse_duration(&self.watch_debounce)?,
             cache_max_object_bytes: self.cache_max_object_bytes,
             health_enabled: self.health_mode.eq_ignore_ascii_case("on"),
+            dry_run: self.dry_run,
         })
     }
 }
@@ -219,7 +253,37 @@ mod tests {
             watch_debounce: "500ms".into(),
             cache_max_object_bytes: 12288,
             health_mode: "on".into(),
+            dry_run: false,
         }
+    }
+
+    #[test]
+    fn dry_run_flag_maps_to_config() {
+        let mut a = common(300);
+        a.dry_run = true;
+        assert!(a.to_config().unwrap().dry_run);
+        let a = common(300);
+        assert!(!a.to_config().unwrap().dry_run);
+    }
+
+    #[test]
+    fn log_format_flag_parses_json() {
+        let cli = Cli::try_parse_from([
+            "leancd",
+            "--log-format",
+            "json",
+            "sync",
+            "--repo-url",
+            "https://x",
+        ])
+        .unwrap();
+        assert_eq!(cli.log_format, "json");
+    }
+
+    #[test]
+    fn log_format_defaults_to_text() {
+        let cli = Cli::try_parse_from(["leancd", "sync", "--repo-url", "https://x"]).unwrap();
+        assert_eq!(cli.log_format, "text");
     }
 
     #[test]

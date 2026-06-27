@@ -2351,3 +2351,143 @@ async fn helm_install_deploys_controller() {
 
     common::helm::uninstall(release, ns);
 }
+
+/// Scenario: `leancd diff` is a read-only drift report. Before any apply it
+/// reports the managed ConfigMap as missing; after a sync it reports "in sync".
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn diff_reports_drift() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("diff");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "cm.yaml".into(),
+            manifests::configmap("diff-cm", "default", &[("k", "v")]),
+        )],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+
+    // Nothing applied yet: diff runs (read-only) and reports drift.
+    let before = common::leancd::diff(&args);
+    assert!(before.success, "diff exited non-zero");
+    assert!(
+        before.stdout.contains("diff"),
+        "expected a diff header: {}",
+        before.stdout
+    );
+
+    // After a sync, diff reports no drift.
+    assert!(common::leancd::sync(&args).success);
+    let after = common::leancd::diff(&args);
+    assert!(after.success);
+    assert!(
+        after.stdout.contains("in sync"),
+        "expected 'in sync' after apply: {}",
+        after.stdout
+    );
+}
+
+/// Scenario: `sync --dry-run` validates without mutating the cluster — the
+/// declared ConfigMap must not be created.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn sync_dry_run_does_not_mutate() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("dryrun");
+    fj.create_repo(&env.repo, false);
+    common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "cm.yaml".into(),
+            manifests::configmap("dry-cm", "default", &[("k", "v")]),
+        )],
+    );
+    let mut args = env.sync_args(&fj.https_url(&env.repo));
+    args.push("--dry-run".into());
+
+    let res = common::leancd::sync(&args);
+    assert!(res.success, "dry-run sync exited non-zero");
+    assert!(
+        !common::kubectl::exists("default", "configmap", "dry-cm"),
+        "dry-run must not create the ConfigMap"
+    );
+    // A real sync afterward still works (state was not advanced).
+    let mut real = env.sync_args(&fj.https_url(&env.repo));
+    assert!(common::leancd::sync(&real).success);
+    assert!(common::kubectl::exists("default", "configmap", "dry-cm"));
+    let _ = real.pop();
+}
+
+/// Scenario: `leancd rollback` re-syncs to the previous commit (HEAD^). After
+/// v2 is applied, rollback lands on v1 and restores its data (a *temporary*
+/// rollback — the deployed controller reconverges to Git HEAD afterwards).
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn rollback_to_previous_commit() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("rollback");
+    fj.create_repo(&env.repo, false);
+
+    // v1: data k=1 (a real commit history starts here).
+    let clone = common::git::push_files(
+        fj,
+        &env.repo,
+        &[(
+            "a.yaml".into(),
+            manifests::configmap("rb-cm", "default", &[("k", "1")]),
+        )],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+    assert!(common::leancd::sync(&args).success);
+
+    // v2: data k=2, appended as a child commit (so HEAD^ is v1).
+    common::git::push_more(
+        &clone,
+        fj,
+        &env.repo,
+        &[(
+            "a.yaml".into(),
+            manifests::configmap("rb-cm", "default", &[("k", "2")]),
+        )],
+    );
+    assert!(common::leancd::sync(&args).success);
+
+    let cm_data = || {
+        std::process::Command::new("kubectl")
+            .args([
+                "get",
+                "configmap",
+                "rb-cm",
+                "-n",
+                "default",
+                "-o",
+                "jsonpath={.data.k}",
+            ])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(cm_data().trim(), "2", "v2 should set k=2");
+
+    // Roll back to the previous commit (HEAD^ = v1) and re-apply.
+    let res = common::leancd::rollback(&args);
+    assert!(res.success, "rollback exited non-zero: {}", res.stderr);
+    // The rolled-back v1 state is transient — the deployed controller
+    // reconverges to Git HEAD (v2) shortly after — so observe it promptly.
+    let restored = common::wait::wait_for(
+        || cm_data().trim() == "1",
+        Duration::from_secs(15),
+        Duration::from_millis(200),
+    );
+    assert!(
+        restored,
+        "rollback should (transiently) restore the v1 data (k=1)"
+    );
+}

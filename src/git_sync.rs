@@ -27,11 +27,40 @@ pub struct SyncOutcome {
     pub changed: bool,
 }
 
-/// Fetch (or initially clone) the repository and report the resulting HEAD.
+/// What a `checkout` should leave the working tree pointing at.
+#[derive(Debug, Clone)]
+pub enum CheckoutTarget {
+    /// The configured branch HEAD — the normal reconcile path.
+    Branch,
+    /// A specific commit SHA (used by `rollback --to <sha>`).
+    Sha(String),
+    /// The Nth first-parent ancestor of the fetched branch HEAD (1 = the
+    /// previous commit); used by `rollback` with no `--to`.
+    Parent(u32),
+}
+
+impl CheckoutTarget {
+    /// `--to <sha>` selects [`CheckoutTarget::Sha`]; no `--to` selects
+    /// [`CheckoutTarget::Parent`] with depth 1 (the previous commit).
+    pub fn from_opt(to: Option<&str>) -> Self {
+        match to {
+            Some(sha) => CheckoutTarget::Sha(sha.to_string()),
+            None => CheckoutTarget::Parent(1),
+        }
+    }
+}
+
+/// Fetch (or initially clone) the repository and leave the working tree at
+/// `target` (the branch HEAD by default, a specific SHA, or an ancestor).
 ///
-/// `prev_sha` is the last known HEAD; when it differs from the freshly fetched
-/// SHA, `changed` is `true` and the caller can skip work when nothing moved.
-pub async fn sync(cfg: &Config, prev_sha: Option<&str>) -> Result<SyncOutcome> {
+/// `prev_sha` is the last known HEAD; when it differs from the freshly
+/// resolved SHA, `changed` is `true`. A non-branch target deepens the shallow
+/// clone in batches until it is reachable (capped, so a bogus SHA fails fast).
+pub async fn checkout(
+    cfg: &Config,
+    prev_sha: Option<&str>,
+    target: &CheckoutTarget,
+) -> Result<SyncOutcome> {
     let url = cfg.authed_url()?;
     // PID-scoped so the controller process and a concurrent `leancd sync` (e.g.
     // via `kubectl exec` in the same Pod) never operate on the same shallow
@@ -45,21 +74,25 @@ pub async fn sync(cfg: &Config, prev_sha: Option<&str>) -> Result<SyncOutcome> {
     let ssh = SshKeyFile::prepare(cfg, work).await?;
 
     if git_dir.exists() {
-        // Existing checkout: update in place.
+        // Existing checkout: update the branch tip in place.
         run_git(
             &["-C", &work_dir, "fetch", "--depth", "1", &url, &cfg.branch],
             false,
             ssh.as_ref(),
         )
         .await?;
-        run_git(
-            &["-C", &work_dir, "reset", "--hard", "FETCH_HEAD"],
-            false,
-            ssh.as_ref(),
-        )
-        .await?;
+        // A branch target fast-forwards to the freshly fetched tip; a SHA or
+        // ancestor target is checked out below (after deepening as needed).
+        if matches!(target, CheckoutTarget::Branch) {
+            run_git(
+                &["-C", &work_dir, "reset", "--hard", "FETCH_HEAD"],
+                false,
+                ssh.as_ref(),
+            )
+            .await?;
+        }
     } else {
-        // Fresh shallow clone.
+        // Fresh shallow clone of the tracked branch (already checked out).
         if work.exists() {
             tokio::fs::remove_dir_all(&work_dir)
                 .await
@@ -81,13 +114,108 @@ pub async fn sync(cfg: &Config, prev_sha: Option<&str>) -> Result<SyncOutcome> {
         .await?;
     }
 
-    let sha = run_git_capture(&["-C", &work_dir, "rev-parse", "HEAD"], ssh.as_ref()).await?;
-    let sha = sha.trim().to_string();
+    // Point the working tree at the requested target.
+    let sha = match target {
+        CheckoutTarget::Branch => {
+            // Already at the branch tip (fetch+reset above, or a fresh clone).
+            run_git_capture(&["-C", &work_dir, "rev-parse", "HEAD"], ssh.as_ref())
+                .await?
+                .trim()
+                .to_string()
+        }
+        CheckoutTarget::Sha(sha) => {
+            ensure_sha_reachable(&work_dir, sha, &url, &cfg.branch, ssh.as_ref()).await?;
+            run_git(&["-C", &work_dir, "checkout", sha], false, ssh.as_ref()).await?;
+            run_git(
+                &["-C", &work_dir, "reset", "--hard", sha],
+                false,
+                ssh.as_ref(),
+            )
+            .await?;
+            sha.clone()
+        }
+        CheckoutTarget::Parent(n) => {
+            ensure_depth(&work_dir, *n as usize + 1, &url, &cfg.branch, ssh.as_ref()).await?;
+            let ref_s = format!("FETCH_HEAD~{n}");
+            run_git(&["-C", &work_dir, "checkout", &ref_s], false, ssh.as_ref()).await?;
+            run_git(
+                &["-C", &work_dir, "reset", "--hard", &ref_s],
+                false,
+                ssh.as_ref(),
+            )
+            .await?;
+            run_git_capture(&["-C", &work_dir, "rev-parse", "HEAD"], ssh.as_ref())
+                .await?
+                .trim()
+                .to_string()
+        }
+    };
+
     let changed = match prev_sha {
         Some(prev) => prev != sha,
         None => true,
     };
     Ok(SyncOutcome { sha, changed })
+}
+
+/// Fetch the branch HEAD (the normal reconcile path). Equivalent to
+/// [`checkout`] with [`CheckoutTarget::Branch`].
+pub async fn sync(cfg: &Config, prev_sha: Option<&str>) -> Result<SyncOutcome> {
+    checkout(cfg, prev_sha, &CheckoutTarget::Branch).await
+}
+
+/// Ensure `sha` is present in the shallow checkout, deepening history in
+/// batches until it is found (capped so a bogus SHA does not fetch forever).
+async fn ensure_sha_reachable(
+    work_dir: &str,
+    sha: &str,
+    url: &str,
+    branch: &str,
+    ssh: Option<&SshKeyFile>,
+) -> Result<()> {
+    for _ in 0..20 {
+        if run_git(&["-C", work_dir, "cat-file", "-e", sha], true, ssh)
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        run_git(
+            &["-C", work_dir, "fetch", "--deepen=50", url, branch],
+            false,
+            ssh,
+        )
+        .await?;
+    }
+    Err(Error::Git(format!(
+        "commit {sha} not reachable after deepening history; check the SHA and branch"
+    )))
+}
+
+/// Ensure the shallow checkout holds at least `depth` commits so an ancestor
+/// ref (`FETCH_HEAD~N`) resolves. Deepens in batches, capped.
+async fn ensure_depth(
+    work_dir: &str,
+    depth: usize,
+    url: &str,
+    branch: &str,
+    ssh: Option<&SshKeyFile>,
+) -> Result<()> {
+    for _ in 0..20 {
+        let count = run_git_capture(&["-C", work_dir, "rev-list", "--count", "HEAD"], ssh).await?;
+        if count.trim().parse::<usize>().unwrap_or(0) >= depth {
+            return Ok(());
+        }
+        run_git(
+            &["-C", work_dir, "fetch", "--deepen=50", url, branch],
+            false,
+            ssh,
+        )
+        .await?;
+    }
+    Err(Error::Git(format!(
+        "could not reach depth {depth} after deepening history"
+    )))
 }
 
 /// An SSH private key plus a per-process `known_hosts` file, written to disk
@@ -297,7 +425,10 @@ mod tests {
         let first = sync(&cfg, None).await.unwrap();
         assert!(first.changed, "first sync must report a change");
         assert!(!first.sha.is_empty());
-        assert!(work.join(".git").exists(), "clone must create a checkout");
+        assert!(
+            Path::new(&cfg.effective_work_dir()).join(".git").exists(),
+            "clone must create a checkout"
+        );
 
         // Re-running against the same SHA must report no change.
         let second = sync(&cfg, Some(&first.sha)).await.unwrap();
@@ -306,6 +437,112 @@ mod tests {
             "an unchanged HEAD must not report a change"
         );
         assert_eq!(first.sha, second.sha);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn checkout_target_from_opt_maps_none_to_parent() {
+        assert!(matches!(
+            CheckoutTarget::from_opt(None),
+            CheckoutTarget::Parent(1)
+        ));
+    }
+
+    #[test]
+    fn checkout_target_from_opt_maps_some_to_sha() {
+        match CheckoutTarget::from_opt(Some("abc123")) {
+            CheckoutTarget::Sha(s) => assert_eq!(s, "abc123"),
+            other => panic!("expected Sha, got {other:?}"),
+        }
+    }
+
+    /// Roll back to the previous commit (HEAD^): `checkout` with `Parent(1)`
+    /// resolves the first commit's SHA. Ignored (needs git). Run with
+    /// `cargo test checkout_rollback -- --ignored`.
+    #[tokio::test]
+    #[ignore = "requires git on PATH; run with: cargo test -- --ignored"]
+    async fn checkout_rollback_to_parent_resolves_previous_commit() {
+        let tmp = std::env::temp_dir().join(format!(
+            "leancd-gitsync-rollback-test-{}",
+            std::process::id()
+        ));
+        let git_ok = std::process::Command::new("git")
+            .arg("--version")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !git_ok {
+            eprintln!("skipping: git not available in this environment");
+            let _ = std::fs::remove_dir_all(&tmp);
+            return;
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+        let repo = tmp.join("repo");
+        let work = tmp.join("work");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        git_in(&repo, &["init", "-q", "-b", "main"]);
+        // First commit.
+        std::fs::write(
+            repo.join("a.yaml"),
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\n",
+        )
+        .unwrap();
+        git_in(&repo, &["add", "-A"]);
+        git_in(
+            &repo,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "v1",
+            ],
+        );
+        // Second commit becomes the branch tip.
+        std::fs::write(
+            repo.join("b.yaml"),
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\n",
+        )
+        .unwrap();
+        git_in(&repo, &["add", "-A"]);
+        git_in(
+            &repo,
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-qm",
+                "v2",
+            ],
+        );
+
+        let cfg = Config {
+            repo_url: format!("file://{}", repo.display()),
+            branch: "main".into(),
+            work_dir: work.to_string_lossy().into(),
+            ..Default::default()
+        };
+
+        // Roll back one commit: the resolved SHA is v1, and it is "changed".
+        let outcome = checkout(&cfg, None, &CheckoutTarget::Parent(1))
+            .await
+            .unwrap();
+        let v1 = std::process::Command::new("git")
+            .args(["-C", &repo.to_string_lossy(), "rev-parse", "main~1"])
+            .output()
+            .unwrap();
+        let v1 = String::from_utf8_lossy(&v1.stdout).trim().to_string();
+        assert_eq!(
+            outcome.sha, v1,
+            "rollback should land on the previous commit"
+        );
+        assert!(outcome.changed, "rollback must report a change");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

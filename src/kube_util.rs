@@ -83,7 +83,9 @@ pub fn api_for(
 
 /// Server-side-apply a manifest value (already carrying apiVersion/kind/
 /// metadata). Always applies with `.force()` so conflicting fields owned by
-/// other managers are reclaimed.
+/// other managers are reclaimed. When `dry_run` is true the patch is sent with
+/// `dryRun`, so the API server validates it (admission included) without
+/// persisting anything — used by `sync --dry-run`.
 pub async fn apply(
     client: &Client,
     ar: &ApiResource,
@@ -91,6 +93,7 @@ pub async fn apply(
     default_namespace: &str,
     manifest: serde_json::Value,
     field_manager: &str,
+    dry_run: bool,
 ) -> Result<DynamicObject> {
     let obj: DynamicObject = serde_json::from_value(manifest).map_err(|e| {
         Error::Manifest(format!("failed to build DynamicObject from manifest: {e}"))
@@ -104,12 +107,20 @@ pub async fn apply(
 
     let api = api_for(client, ar, scope, namespace, default_namespace);
 
-    let pp = PatchParams::apply(field_manager).force();
+    let pp = patch_params(field_manager, dry_run);
     let patched = api
         .patch(&name, &pp, &Patch::Apply(&obj))
         .await
         .map_err(Error::Kube)?;
     Ok(patched)
+}
+
+/// Build the SSA `PatchParams`: `force()` reclaims conflicting fields, and
+/// `dry_run()` (kube-rs builder) sets `dryRun` so a patch validates without
+/// mutating. Pure: no API call, unit-testable.
+fn patch_params(field_manager: &str, dry_run: bool) -> PatchParams {
+    let pp = PatchParams::apply(field_manager).force();
+    if dry_run { pp.dry_run() } else { pp }
 }
 
 /// List live resources of a kind across **all** namespaces (namespaced
@@ -240,5 +251,18 @@ mod tests {
             wire["data"], manifest["data"],
             "ConfigMap data must survive the round-trip"
         );
+    }
+
+    #[test]
+    fn patch_params_sets_dry_run_and_force() {
+        // A normal apply: force reclaims conflicts, dry_run is off.
+        let pp = patch_params("leancd", false);
+        assert!(pp.force, "SSA must always force-conflict");
+        assert!(!pp.dry_run);
+        assert_eq!(pp.field_manager.as_deref(), Some("leancd"));
+        // A dry-run apply: force is still set, dry_run is on.
+        let dry = patch_params("leancd", true);
+        assert!(dry.force);
+        assert!(dry.dry_run, "dry-run patch must set dryRun");
     }
 }

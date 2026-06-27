@@ -105,6 +105,12 @@ pub struct Config {
     /// completion is unaffected either way (apply success still completes a
     /// sync) — health is an independent signal.
     pub health_enabled: bool,
+
+    /// When true, `reconcile` validates the desired manifests via a server-side
+    /// **dry-run** apply and reports what would change, without mutating the
+    /// cluster or persisting state. Hooks and pruning are skipped (no side
+    /// effects), and `last_sha`/state are not advanced. Set by `sync --dry-run`.
+    pub dry_run: bool,
 }
 
 impl Config {
@@ -320,6 +326,7 @@ mod tests {
             watch_debounce: std::time::Duration::from_millis(500),
             cache_max_object_bytes: 12288,
             health_enabled: true,
+            dry_run: false,
         }
     }
 

@@ -336,6 +336,7 @@ async fn run_one(
         &cfg.namespace,
         value,
         &cfg.field_manager,
+        false,
     )
     .await
     .map_err(|e| (key.clone(), format!("apply failed: {e}")))?;
