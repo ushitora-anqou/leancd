@@ -1,12 +1,15 @@
 //! Drift detection: compare the live cluster state of Git-managed resources
 //! against the desired manifests and report differences.
 //!
-//! Per the memory strategy this is done with periodic `List` calls (one per
-//! resource kind), not `Watch`. Comparison is a subset check: the Git manifest
-//! is considered drifted when any of its declared fields diverge in the live
-//! object (server-injected defaults are tolerated).
+//! The List-based [`detect`] issues one `List` per resource kind (filtered by
+//! the managed-by label); in `cache` watch-mode [`detect_from_lw`] instead
+//! subset-checks SmallTier objects straight from the watch-backed
+//! `LightweightStore`, with LargeTier objects falling back to one `List` per
+//! GVK. Comparison is a subset check: the Git manifest is considered drifted
+//! when any of its declared fields diverge in the live object (server-injected
+//! defaults are tolerated).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use kube::core::DynamicObject;
@@ -229,6 +232,34 @@ fn drift_from_cache<'a>(
     (drifts, large_by_gvk)
 }
 
+/// Collect SmallTier live objects from the per-GVK cache, for health
+/// assessment on a cache-mode drift-check pass (the cache-mode counterpart of
+/// the `List`-based live set returned by [`collect_live`]/[`detect`]). Scoping
+/// to the GVKs that `manifests` declare matters because [`find_live_match`]
+/// keys on name+namespace alone: an object cached under a GVK no longer in the
+/// manifest set could otherwise be mistaken for a manifest of the same name+
+/// namespace and health-assessed under the wrong GVK.
+fn collect_cached_live(
+    manifests: &[RawManifest],
+    stores: &HashMap<(String, String, String), Arc<Mutex<LightweightStore>>>,
+) -> Vec<DynamicObject> {
+    let mut live: Vec<DynamicObject> = Vec::new();
+    let mut seen: HashSet<(String, String, String)> = HashSet::new();
+    for m in manifests {
+        let gvk = m.gvk();
+        // One GVK may have several manifests; its cache is read once.
+        if !seen.insert(gvk.clone()) {
+            continue;
+        }
+        if let Some(store) = stores.get(&gvk) {
+            if let Ok(guard) = store.lock() {
+                live.extend(guard.small_values().cloned());
+            }
+        }
+    }
+    live
+}
+
 /// Cache-mode drift detection against `LightweightStore`s. SmallTier entries
 /// are subset-checked straight from the cache (no clone, no per-pass `List`);
 /// Absent keys are drift; LargeTier keys (body not cached) fall back to a
@@ -244,13 +275,9 @@ pub async fn detect_from_lw(
 
     // Small-tier live objects come straight from the cache (cloned) so health
     // assessment can match them without a List; large-tier objects are appended
-    // from the List fallback below.
-    let mut live: Vec<DynamicObject> = Vec::new();
-    for store in stores.values() {
-        if let Ok(guard) = store.lock() {
-            live.extend(guard.small_values().cloned());
-        }
-    }
+    // from the List fallback below. Scoped to the manifest set's GVKs (see
+    // `collect_cached_live`).
+    let mut live: Vec<DynamicObject> = collect_cached_live(manifests, stores);
 
     if large_by_gvk.is_empty() {
         return Ok((drifts, live));
@@ -1008,5 +1035,53 @@ data:
         let (drifts, large) = drift_from_cache(&classified.main, &stores);
         assert!(drifts.is_empty());
         assert!(large.is_empty());
+    }
+
+    // --- collect_cached_live: live-set scoping for health assessment ---
+
+    #[test]
+    fn collect_cached_live_excludes_non_manifest_gvks() {
+        // A Deployment "foo" (apps/v1) is cached as SmallTier, but the manifest
+        // set only declares a ConfigMap "foo" (core/v1). find_live_match keys
+        // on name+namespace alone, so the Deployment must not be collected —
+        // otherwise it would be health-assessed as if it were the ConfigMap.
+        let cm = test_manifest(
+            "",
+            "ConfigMap",
+            "foo",
+            Some("ns"),
+            json!({"data": {"k": "1"}}),
+        );
+        let dep = dyn_obj("foo", Some("ns"), json!({"replicas": 1}));
+        let mut stores = HashMap::new();
+        stores.insert(
+            (
+                "apps".to_string(),
+                "v1".to_string(),
+                "Deployment".to_string(),
+            ),
+            lw_store(1024, vec![dep]),
+        );
+        let live = collect_cached_live(&[cm], &stores);
+        assert!(
+            live.is_empty(),
+            "objects whose GVK is absent from the manifest set must not be collected"
+        );
+    }
+
+    #[test]
+    fn collect_cached_live_includes_manifest_gvk_objects() {
+        // Positive control: a ConfigMap in the manifest set IS collected.
+        let cm = test_manifest(
+            "",
+            "ConfigMap",
+            "foo",
+            Some("ns"),
+            json!({"data": {"k": "1"}}),
+        );
+        let cm_live = dyn_obj("foo", Some("ns"), json!({"data": {"k": "1"}}));
+        let stores = lw_stores_with("ConfigMap", lw_store(1024, vec![cm_live]));
+        let live = collect_cached_live(&[cm], &stores);
+        assert_eq!(live.len(), 1, "manifest-set GVK objects are collected");
     }
 }
