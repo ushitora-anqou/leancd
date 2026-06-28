@@ -4,6 +4,7 @@
 
 - **TDD (all three test layers)**: When adding a feature or fixing a bug, write a failing test first, confirm it fails, then implement the fix. Cover the change across **all three test layers** as appropriate — **unit tests** (`#[cfg(test)]` in each module), **integration tests** (cluster-free multi-module coverage under `tests/`), and **e2e tests** (`tests/e2e.rs`, a `kind` cluster with in-cluster Forgejo + Lean CD). Don't satisfy a change with a single layer when more apply.
 - **Run `nix flake check` before finishing or committing**: `nix flake check` (== `make test`) is the full CI gate — fmt (cargo + taplo), clippy (`-D warnings`), unit + integration tests (nextest), cargo-deny, cargo-audit, helm lint, helm template. Never mark a task done or run `git commit` until it is green, **and** run `make e2e` for the e2e layer. Fix failures before moving on; never skip, `#[ignore]`, or work around a failing test.
+- **Run verification tests without per-run confirmation**: Tests needed to verify a change — `cargo test`, `make test` (`nix flake check`), `make e2e`, `make bench`, etc. — may be run **without asking the user first**, even when they are long-running (the e2e and bench suites bring up a `kind` cluster and can take many minutes). Do not skip, shorten, or defer a verification test because it is slow; run it and report the result. This complements the rule above — the gate must be green and the e2e layer run, and long run time is never a reason to skip it.
 - **Pre-commit formatting**: Always run `make fmt` before `git commit`.
 - **Update documentation**: When adding or modifying a feature, update README.md and the `--help` output (clap `#[command]`/`#[arg]` attributes in `cli.rs`) accordingly.
 - **Update CHANGELOG.md**: Every code change — feature, fix, refactor, docs-only edit, or test addition — must add an entry to `CHANGELOG.md` under the `[Unreleased]` heading in the matching Keep a Changelog category (`Added` / `Changed` / `Deprecated` / `Removed` / `Fixed` / `Security`). This is on par with the rules above; do not mark a task done with an unchanged changelog. See "Documentation conventions" below for the format.
@@ -46,9 +47,9 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 
 ## Architecture
 
-### Single binary, four subcommands, one shared engine
+### Single binary, six subcommands, one shared engine
 
-`clap` (derive) defines `controller`, `sync`, `status`, and `health` (`cli.rs`), plus `--version`. `controller` (long-lived, the `Deployment`) and `sync` (one pass) are dispatched to **the same `Reconciler`** (`reconcile.rs`) — `run_loop()` just calls `run_once()` on a poll interval (in `cache`/`trigger` `--watch-mode`, `watch.rs` also wakes it on a cluster-side change within `--watch-debounce`, ahead of the poll interval), and `sync` calls `run_once()` once and exits. This guarantees manual and automatic sync use identical apply logic. `status` and `health` are read-only (they read the state ConfigMap); `health` classifies freshness for an `exec` liveness/readiness probe.
+`clap` (derive) defines `controller`, `sync`, `status`, `health`, `diff`, and `rollback` (`cli.rs`), plus `--version`. `controller` (long-lived, the `Deployment`) and `sync` (one pass) are dispatched to **the same `Reconciler`** (`reconcile.rs`) — `run_loop()` just calls `run_once()` on a poll interval (in `cache`/`trigger` `--watch-mode`, `watch.rs` also wakes it on a cluster-side change within `--watch-debounce`, ahead of the poll interval), and `sync` calls `run_once()` once and exits. This guarantees manual and automatic sync use identical apply logic. `status` and `health` are read-only (they read the state ConfigMap); `health` classifies freshness for an `exec` liveness/readiness probe.
 
 ### Reconciliation flow (`reconcile.rs::reconcile`)
 
@@ -84,9 +85,10 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 | `watch.rs` | optional cluster-side-drift trigger (`--watch-mode` off/trigger/cache): per-GVK `watcher` drivers (consumed directly, no reflector) that wake `run_loop`; `cache` mode holds a per-GVK size-bounded `LightweightStore` |
 | `drift.rs` | per-GVK `List` (or `LightweightStore` read in `cache` mode) + subset comparison |
 | `state.rs` | single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
-| `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics via `PeriodicReader` (`leancd_sync_total`, `leancd_sync_errors_total`, `leancd_hooks_total`, `leancd_sync_last_success_timestamp_seconds`, `leancd_drift_detected`, `leancd_managed_resources`, `leancd_rss_bytes`). No HTTP listener. |
+| `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics via `PeriodicReader` (`leancd_sync_total`, `leancd_sync_errors_total`, `leancd_hooks_total`, `leancd_apply_failures_total`, `leancd_sync_last_success_timestamp_seconds`, `leancd_drift_detected`, `leancd_managed_resources`, `leancd_rss_bytes`, `leancd_health_status`). No HTTP listener. |
 | `error.rs` | `thiserror` `Error` enum (`Git`, `Manifest`, `Kube`, `Config`, `Hook`, `Io`, `Other`) and `Result` alias |
 | `health.rs` | `health` subcommand: classifies the last sync state (fresh/never/stale/failing) for `exec` liveness/readiness probes |
+| `resource_health.rs` | Argo CD-style resource-health assessment (per-GVK checks); worst status across managed resources, persisted in state and exported as `leancd_health_status` |
 | `version.rs` | build-time version info: embeds the git SHA (via `build.rs`) for `--version` and the startup log |
 
 ## Implementation notes worth remembering

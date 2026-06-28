@@ -25,16 +25,16 @@ feature reference (every flag, env var, metric) see
 
 ## 1. Overview
 
-Lean CD is a single static binary with four subcommands. The `controller` and
-`sync` subcommands share one reconciliation engine; `status` and `health` are
-read-only. One running process syncs exactly one Git repository (one branch,
-one path) into the cluster it runs in.
+Lean CD is a single static binary with six subcommands. The `controller` and
+`sync` subcommands share one reconciliation engine; `status`, `health`, `diff`,
+and `rollback` are read-only or one-shot. One running process syncs exactly one
+Git repository (one branch, one path) into the cluster it runs in.
 
 ```
         ┌─────────────────────────────────────────────┐
         │                  leancd                     │
         │                                             │
-        │ controller / sync / status / health ► Reconciler │
+        │ controller / sync / status / health / diff / rollback ► Reconciler │
         │                                      │      │
         │   ┌──────────┬──────────┬──────────┬───────┼───┐
         │   ▼          ▼          ▼          ▼       ▼   │
@@ -62,8 +62,9 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | Module | Responsibility |
 |---|---|
 | `main.rs` | Entry point: `tokio` `current_thread` runtime, tracing, subcommand dispatch, graceful shutdown |
-| `cli.rs` | `clap` subcommands (`controller`, `sync`, `status`, `health`) and shared `CommonArgs` → `Config` |
+| `cli.rs` | `clap` subcommands (`controller`, `sync`, `status`, `health`, `diff`, `rollback`) and shared `CommonArgs` → `Config` |
 | `health.rs` | `health` subcommand: classifies the last sync state (fresh/never/stale/failing) for `exec` liveness/readiness probes |
+| `resource_health.rs` | Argo CD-style resource-health assessment (per-GVK checks for Deployment/Pod/Job/Service/…); worst status across managed resources |
 | `config.rs` | Validated `Config`; Git-transport classification; credential resolution; duration parser |
 | `git_sync.rs` | Shallow `fetch`/`clone` and HEAD-SHA change detection via the `git` CLI |
 | `manifest.rs` | Streaming multi-document YAML parse; GVK/ns/name extraction; `kind: List` expansion; managed-label injection; annotation read helper |
@@ -72,16 +73,16 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | `reconcile.rs` | The `Reconciler` engine shared by `controller` and `sync` |
 | `lock.rs` | Reconcile-pass mutual exclusion via a `coordination.k8s.io/v1` Lease (one pass at a time, cluster-wide); stale-lease reclaim |
 | `watch.rs` | Optional watch trigger (`--watch-mode`): per-GVK `watcher` drivers (consumed directly, no reflector) that wake `run_loop` on a cluster-side change, collapsing drift-detection latency below `poll_interval`; in `cache` mode each driver maintains a size-bounded `LightweightStore` |
-| `drift.rs` | Per-GVK `List` (or `Store` read in cache mode) + subset comparison for drift detection |
+| `drift.rs` | Per-GVK `List` (or `LightweightStore` read in cache mode) + subset comparison for drift detection |
 | `prune.rs` | Two-signal deletion of resources removed from Git; honors `resource-policy: keep` and Helm hooks |
 | `state.rs` | Single ConfigMap persistence (`State` ↔ `BTreeMap<String,String>`) |
 | `metrics.rs` | OpenTelemetry OTLP/HTTP (push) metrics; exposes `leancd_rss_bytes`. No HTTP listener. |
 | `error.rs` | `thiserror` `Error` enum (`Git`, `Manifest`, `Kube`, `Config`, `Hook`, `Io`, `Other`) and `Result` alias |
 | `version.rs` | Build-time version info: embeds the git SHA (via `build.rs`) for `--version` and the startup log |
 
-## 3. The single binary and its four subcommands
+## 3. The single binary and its six subcommands
 
-`cli.rs` defines four subcommands. `controller` and `sync` are dispatched to
+`cli.rs` defines six subcommands. `controller` and `sync` are dispatched to
 **the same `Reconciler`** — `controller` is just `sync` called repeatedly.
 
 | Subcommand | Behavior | Entry |
@@ -90,6 +91,8 @@ boundary that touches the Kubernetes API; `main` wires the runtime.
 | `sync` | One reconciliation pass (`run_once()`), then exits | `run_sync` |
 | `status` | Reads the state ConfigMap and prints it, then exits (no reconciliation) | `run_status` |
 | `health` | Reads the state ConfigMap, classifies freshness/staleness/failure for `exec` probes, then exits (no reconciliation) | `health::run_health` |
+| `diff` | Fetches HEAD, parses manifests, runs the drift check, prints the report — no apply, no state change, no Lease (read-only) | `run_diff` → `reconcile::diff` |
+| `rollback` | Checks out a past commit (`--to <sha>`, or `HEAD^`) and re-syncs to it; **temporary** — the next controller pass reconverges to branch HEAD | `run_rollback` |
 
 Because manual and automatic sync share `run_once`, the apply logic is
 identical in both paths.
@@ -166,8 +169,9 @@ error and only logs a summary; a hard `Err` is only surfaced for git, state,
 or discovery-stopping errors. `run_once` increments `sync_errors` and records
 `last_error` into state when `reconcile` returns `Err`.
 
-`run_loop` simply calls `run_once(false)` in a loop, sleeping `poll_interval`
-between passes and logging (never aborting on) per-pass errors.
+`run_loop` simply calls `run_once()` in a loop, sleeping `poll_interval`
+between passes, waking early on a watch poke (debounced), backing off with
+jitter on consecutive failures, and logging (never aborting on) per-pass errors.
 
 ## 5. Git and the git CLI
 
@@ -275,10 +279,12 @@ resources (`watch.rs`) so a cluster-side edit (`kubectl`, another controller)
 wakes the reconcile loop within the debounce window instead of waiting up to
 `poll_interval`. Three `--watch-mode`s, selected at runtime:
 
-- `cache` (default): a `reflector` + `Store` per managed GVK; drift detection
-  reads live state from the stores (`drift::detect_from_stores`) with **no
-  per-pass `List`**. Holds a cache of all managed objects (scales with object
-  count; measured to stay well under the budget).
+- `cache` (default): a size-bounded `LightweightStore` per managed GVK (the
+  watcher stream consumed directly, no reflector). Objects up to
+  `--cache-max-object-bytes` are cached in full (SmallTier) and drift-checked
+  from the cache (`drift::detect_from_lw`) with **no per-pass `List`**; larger
+  objects are tracked by key only (LargeTier) and drift-checked via a per-GVK
+  `List` fallback, so the cache's RSS does not grow with per-object payload size.
 - `trigger`: a `watcher` stream per managed GVK pokes a `Notify` on any
   `touched` event (an apply OR a delete); drift detection stays the List-based
   path below. Holds no object cache (the leanest mode).
@@ -364,6 +370,8 @@ data key, `state`:
 | `drift_count` | Drifts detected on the last pass |
 | `managed_count` | Resources managed on the last pass |
 | `applied` | JSON array of `ResourceKey` applied on the last pass |
+| `apply_failures` | `ResourceKey`s whose server-side apply failed on the last pass (self-heals next pass; never written to `last_error`) |
+| `health` | `HealthSummary`: worst resource-health status + per-status counts (Healthy/Progressing/Degraded/Suspended/Missing/Unknown) |
 
 A corrupt `applied` JSON falls back to an empty array rather than failing, so a
 single bad value cannot wedge reconciliation. `status` renders this ConfigMap.
@@ -388,10 +396,12 @@ footprint at collection time.
 | `leancd_sync_total` | counter | — | every `run_once` |
 | `leancd_sync_errors_total` | counter | — | failed reconcile |
 | `leancd_hooks_total` | counter | `phase`, `result` | per phase executed (presync/postsync/predelete/postdelete × succeeded/failed) |
+| `leancd_apply_failures_total` | counter | — | resources whose apply failed on a pass |
 | `leancd_sync_last_success_timestamp_seconds` | observable gauge | — | on success |
 | `leancd_drift_detected` | observable gauge | `group`, `version`, `kind` | reset each pass, then set per GVK |
 | `leancd_managed_resources` | observable gauge | — | each pass |
 | `leancd_rss_bytes` | observable gauge | — | on each collection |
+| `leancd_health_status` | observable gauge | `status` | managed resources by resource-health status (reset each pass) |
 
 ## 12. Runtime, concurrency, and failure modes
 
@@ -422,7 +432,7 @@ footprint at collection time.
   `backoff_delay` (`backoff_base`·2ⁿ, capped at `backoff_max`), jittered to
   `[0.75x, 1.0x)`, before the next attempt, resetting to `poll_interval` on
   success. Shutdown is cooperative (see
-  [§3](#3-the-single-binary-and-its-four-subcommands)).
+  [§3](#3-the-single-binary-and-its-six-subcommands)).
 - **`main`'s top-level errors** use `anyhow` (exit non-zero); library code uses
   `crate::error::{Error, Result}` (a `thiserror` enum).
 
@@ -466,6 +476,10 @@ Implementation caveats (the memory strategy that keeps RSS minimal — all
 subject to the correctness-first invariant above; the reconcile Lease in
 `lock.rs` is the one deliberate structural cost accepted in its name):
 
+- The process uses the `mimalloc` global allocator (`src/main.rs`), which
+  returns freed pages to the OS — important under the churn of transient
+  drift-check allocations (see `bench/cache-bloat.sh`). It replaces the system
+  allocator for the whole process.
 - Watch is now used (`watch.rs`) as a cluster-side-drift trigger (default
   `--watch-mode=cache`). In `trigger` mode it holds no object cache; in `cache`
   mode it holds a per-GVK size-bounded `LightweightStore` (replacing the old

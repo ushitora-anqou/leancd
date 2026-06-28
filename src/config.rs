@@ -83,8 +83,10 @@ pub struct Config {
     pub lock_wait_timeout: std::time::Duration,
 
     /// How cluster-side resource changes wake the reconcile loop
-    /// (`off`/`trigger`/`cache`). See `watch.rs`. `off` (default) means
-    /// periodic-poll drift detection only — today's behavior.
+    /// (`off`/`trigger`/`cache`). See `watch.rs`. The CLI default is `cache`
+    /// (see `cli.rs`): the per-GVK `LightweightStore` keeps steady-state drift
+    /// checks off the per-pass `List` path while staying under the RSS budget.
+    /// `off` is periodic-poll drift detection only.
     pub watch_mode: crate::watch::WatchMode,
     /// Debounce window for watch-triggered reconciles: a burst of watch events
     /// within this window collapses into one pass (avoids N passes on a

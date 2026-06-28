@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Cache-bloat scenarios: verify the watch cache (reflector/Store, `--watch-mode=cache`)
+# Cache-bloat scenarios: verify the watch cache (LightweightStore, `--watch-mode=cache`)
 # stays under the RSS budget when the managed object count, per-object size, or churn
 # rate is pushed well beyond the default bench. Every scenario runs in cache mode and
 # is gated at RSS_BUDGET_MIB (default 50).
 #
 # Scenarios:
-#   scale     — many namespaces: object COUNT scales the Store
-#   large-obj — large ConfigMap payloads: per-object SIZE scales the Store
-#   churn     — repeated create/delete of managed objects: the Store must track
+#   scale     — many namespaces: object COUNT scales the LightweightStore
+#   large-obj — large ConfigMap payloads: per-object SIZE scales the LightweightStore
+#   churn     — repeated create/delete of managed objects: the LightweightStore must track
 #               deletes and not accumulate (leak) over many cycles
 #
 # `scale` and `large-obj` reuse bench/bench.sh with env overrides (bench.sh and
@@ -165,10 +165,10 @@ sample() {
   [ "$s" -gt "$CPEAK" ] && CPEAK="$s"; CIDLE="$s"
   [ "$t" -gt "$CTMAX" ] && CTMAX="$t"; CTMIN="$t"
 }
-# Let leancd do its first reconcile + populate the Store.
+# Let leancd do its first reconcile + populate the LightweightStore.
 for _ in $(seq 1 8); do sample; sleep 1; done
 # Churn: add then remove a ConfigMap each cycle. leancd polls HEAD and applies /
-# prunes; the watch updates the Store (Apply on add, Delete on prune). A leak
+# prunes; the watch updates the LightweightStore (Apply on add, Delete on prune). A leak
 # would show idle RSS climbing across cycles.
 for i in $(seq 1 "$BLOAT_CHURNS"); do
   cat > "$WORK/repo/cm-churn-$i.yaml" <<EOF

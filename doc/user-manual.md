@@ -114,6 +114,28 @@ cluster unless its delete policy already removed it on the final run that still
 declared it (e.g. `hook-succeeded` after a successful run), or until it is
 deleted manually. This mirrors Argo CD.
 
+### Resource health
+
+Alongside "did the apply succeed?", Lean CD evaluates an independent signal:
+**resource health** — whether the managed resources are actually healthy, in the
+Argo CD sense. It is a port of Argo CD's built-in per-GVK health checks
+(`src/resource_health.rs`), covering `Deployment`, `StatefulSet`, `ReplicaSet`,
+`DaemonSet`, `Pod`, `Job`, `Service`, `Ingress`, `PersistentVolumeClaim`,
+`HorizontalPodAutoscaler`, `APIService`, and the Argo `Workflow` CRD. Each is
+classified into one of six statuses: `Healthy`, `Progressing`, `Degraded`,
+`Suspended`, `Missing`, or `Unknown` (resources without a built-in check, such
+as a `ConfigMap`, are skipped). Like Argo CD, Lean CD does **not** descend
+`ownerReferences` — a Deployment's health reads its own `.status`, which already
+aggregates its ReplicaSet/Pod state.
+
+Each pass evaluates the worst status across the managed resources (with a
+built-in check) and persists it in the state ConfigMap, so it surfaces in
+`leancd status` and `leancd health`, and in the `leancd_health_status` metric
+(by `status`). Sync completion is unaffected — a successful apply still completes
+the sync — so health is a *post-hoc* signal, not a gate. Toggle the whole
+assessment with `--health-mode` (`on`, the default, runs it; `off` skips it and
+its metric).
+
 ## 3. Installation
 
 There is no published binary or image yet; build from source.
@@ -146,7 +168,7 @@ two for HTTPS and SSH transports). The entrypoint is `leancd`.
 
 ## 4. Subcommands
 
-Lean CD has four subcommands. All flags in [§5](#5-configuration-reference) are
+Lean CD has six subcommands. All flags in [§5](#5-configuration-reference) are
 accepted by every subcommand (they share `CommonArgs`); flags that only matter
 for `controller` are noted there.
 
@@ -184,14 +206,15 @@ never block a sync.
 ### `leancd status`
 
 Read-only: prints the contents of the state ConfigMap (last SHA, sync count,
-managed/drift counts, last sync time, last error). No reconciliation or metrics
-instrumentation.
+managed/drift counts, resource-health summary, last sync time, last error, and —
+when non-empty — the resources whose last apply failed). No reconciliation or
+metrics instrumentation.
 
 ```sh
 leancd status
 ```
 
-Output:
+Output (with `--health-mode=on`, the default):
 
 ```
 leancd status (default/leancd-state)
@@ -199,7 +222,22 @@ leancd status (default/leancd-state)
   sync count: 42
   managed:    17
   drift:      0
+  health:     Healthy (healthy 15 progressing 2 degraded 0 missing 0)
   last sync:  unix 1700000000
+```
+
+The `health:` line shows the worst resource-health status and per-status counts
+(see [Resource health](#resource-health)). It is omitted when health assessment
+is disabled (`--health-mode=off`) or no managed resource has a built-in check.
+
+When some resources failed to apply on the last pass, an `apply failures:` block
+lists them — a visibility signal only, since each self-heals on the next pass's
+drift check. It is **not** written to `last_error`, so it does not trip the
+probe:
+
+```
+  apply failures: 1 (self-heal next pass; not reflected in last_error)
+    [apps/v1/Deployment default/web]
 ```
 
 If no state is recorded yet it prints `no sync state recorded yet`.
@@ -220,8 +258,11 @@ ConfigMap and classifies the last sync. Exits with:
 leancd health                         # exit code reflects sync health
 ```
 
-It exposes no HTTP listener — wire it to a Deployment `livenessProbe`/
-`readinessProbe` as `exec: [leancd, health]` (see the chart's
+For visibility it also prints the worst resource-health status on stdout as
+`resource health: <status>` (an independent signal — see
+[Resource health](#resource-health)); the exit code still reflects sync
+freshness. It exposes no HTTP listener — wire it to a Deployment
+`livenessProbe`/`readinessProbe` as `exec: [leancd, health]` (see the chart's
 [`templates/deployment.yaml`](../charts/leancd/templates/deployment.yaml)).
 
 ### `leancd diff`
@@ -286,10 +327,12 @@ Precedence is **flag > env > default**. A flag always wins over its env var.
 | `--backoff-max` | `LEANCD_BACKOFF_MAX` | `10m` | controller | maximum backoff delay (cap); resets to `--poll-interval` on success |
 | `--shutdown-timeout-secs` | `LEANCD_SHUTDOWN_TIMEOUT_SECS` | `28` | controller | grace period for the in-flight pass to finish before force-abort on shutdown (keep ≤ Pod `terminationGracePeriodSeconds`) |
 | `--health-stale-factor` | `LEANCD_HEALTH_STALE_FACTOR` | `10` | all | `leancd health` reports stale when the last sync is older than `poll_interval × this` |
+| `--health-mode` | `LEANCD_HEALTH_MODE` | `on` | all | `on` (default) evaluates and publishes Argo CD-style resource health each pass (see [Resource health](#resource-health)); `off` skips it and its metric. Sync completion is unaffected — health is an independent signal |
 | `--lock-lease-duration-secs` | `LEANCD_LOCK_LEASE_DURATION_SECS` | `60` | all | reconcile-exclusion Lease lifetime (s); a crashed holder's lease is reclaimed after this. Concurrent `controller`/`sync` passes are serialized via a Lease so only one runs at a time. |
 | `--lock-wait-timeout-secs` | `LEANCD_LOCK_WAIT_TIMEOUT_SECS` | `30` | all | seconds to wait for the reconcile Lease when another pass holds it before skipping with a "busy" INFO log (not an error) |
-| `--watch-mode` | `LEANCD_WATCH_MODE` | `cache` | controller | how cluster-side drift wakes the loop: `off` (periodic poll only), `trigger` (a `watcher` per managed GVK pokes the loop on any change; drift checked via `List`), or `cache` (a `watcher` + reflector `Store` per GVK; drift read from the Store, so no per-pass `List`). Default `cache`: measured (`bench/`) to match `trigger` on RSS while removing per-pass `List` apiserver load. |
+| `--watch-mode` | `LEANCD_WATCH_MODE` | `cache` | controller | how cluster-side drift wakes the loop: `off` (periodic poll only), `trigger` (a `watcher` per managed GVK pokes the loop on any change; drift checked via `List`), or `cache` (a `watcher` + size-bounded `LightweightStore` per GVK; drift read from the cache, so no per-pass `List`). Default `cache`: measured (`bench/`) to match `trigger` on RSS while removing per-pass `List` apiserver load. |
 | `--watch-debounce` | `LEANCD_WATCH_DEBOUNCE` | `500ms` | controller | collapses a burst of watch events (a reconnect `InitApply` burst, or a rapid edit storm) into one reconcile pass |
+| `--cache-max-object-bytes` | `LEANCD_CACHE_MAX_OBJECT_BYTES` | `12288` | controller | in `cache` mode, the max serialized size (bytes) of an object cached in full; larger objects are tracked by key only and drift-checked via a per-GVK `List`. `0` disables body caching (all LargeTier) |
 | `--dry-run` | — (flag only) | `false` | `sync` | server-side **dry-run** apply: validate without mutating the cluster or advancing state (hooks/prune skipped) |
 | `--log-format` | `LEANCD_LOG_FORMAT` | `text` | all | log output format: `text` (human-readable) or `json` (one JSON object per line, for aggregation). Fixed at startup; `RUST_LOG` still reloads on SIGHUP |
 
@@ -424,10 +467,12 @@ text-format output).
 | `leancd_sync_total` | counter | — | Number of reconciliation passes |
 | `leancd_sync_errors_total` | counter | — | Number of failed reconciliations |
 | `leancd_hooks_total` | counter | `phase`, `result` | Helm hooks executed (`phase` ∈ presync/postsync/predelete/postdelete; `result` ∈ succeeded/failed) |
+| `leancd_apply_failures_total` | counter | — | Resources whose server-side apply failed on a pass (each self-heals on the next pass) |
 | `leancd_sync_last_success_timestamp_seconds` | observable gauge | — | Unix timestamp of the last successful sync |
 | `leancd_drift_detected` | observable gauge | `group`, `version`, `kind` | Drifted resources, broken down by GVK (reset each pass) |
 | `leancd_managed_resources` | observable gauge | — | Number of resources managed by Lean CD |
 | `leancd_rss_bytes` | observable gauge | — | Process resident set size in bytes (read at each collection) |
+| `leancd_health_status` | observable gauge | `status` | Managed resources by resource-health status — Argo CD-style health assessment (`Healthy`/`Progressing`/`Degraded`/`Suspended`/`Missing`/`Unknown`); reset each pass |
 
 `leancd_rss_bytes` is the headline metric: it must stay under the RSS budget
 at both the sync peak and idle. It is read fresh at each collection from
@@ -437,6 +482,15 @@ footprint.
 `leancd_drift_detected` is reset to zero at the start of each pass and then set
 per GVK from that pass's results, so a drift that was fixed clears on the next
 reconcile rather than sticking.
+
+`leancd_apply_failures_total` counts resources whose server-side apply failed on
+a pass (API discovery or apply error). It is a visibility signal only — each
+self-heals on the next pass's drift check, and it is never written to
+`last_error`, so it does not trip the probe.
+
+`leancd_health_status` (label `status`) reports managed resources by their
+Argo CD-style health status (see [Resource health](#resource-health)); like
+`leancd_drift_detected` it is reset each pass so a resolved status clears.
 
 Sample PromQL:
 
@@ -553,7 +607,7 @@ Lean CD's series.
 `--poll-interval` trades responsiveness for API traffic. Lower values detect
 Git changes faster but issue more reconcile passes. Each steady-state pass
 lists live managed resources — one `List` per GVK in `off`/`trigger`
-`--watch-mode`, or a `Store` read (no per-pass `List`) in `cache` (the
+`--watch-mode`, or a `LightweightStore` read (no per-pass `List`) in `cache` (the
 default). Note `cache`/`trigger` modes also wake the loop on a cluster-side
 change within `--watch-debounce`, so `--poll-interval` bounds Git-side
 detection latency, not drift self-heal. The default `60s` is what the RSS

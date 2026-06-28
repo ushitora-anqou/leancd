@@ -49,7 +49,7 @@ binary default is `cache`). To compare the watch modes against the RSS budget:
 ```sh
 LEANCD_WATCH_MODE=off     RSS_BUDGET_MIB=50 make bench   # poll-only baseline
 LEANCD_WATCH_MODE=trigger RSS_BUDGET_MIB=50 make bench   # watch trigger, List drift-check
-LEANCD_WATCH_MODE=cache   RSS_BUDGET_MIB=50 make bench   # watch + Store drift-check (default)
+LEANCD_WATCH_MODE=cache   RSS_BUDGET_MIB=50 make bench   # watch + LightweightStore drift-check (default)
 ```
 
 At 15 namespaces × 18 resources the three measure ≈13 / 16 / 16 MiB self RSS
@@ -73,8 +73,9 @@ level breaches the budget.
 ## Cache-bloat scenarios
 
 `make bench` / `make scale` measure cache mode only at the default scale (15 ns
-× 18 resources, 200 B ConfigMap payload), where the watch `Store` is small. The
-`Store` grows with both the **object count** and the **per-object size**, and a
+× 18 resources, 200 B ConfigMap payload), where the watch `LightweightStore` is
+small. The `LightweightStore` grows with both the **object count** and the
+**per-object size**, and a
 correctness question is whether repeated create/delete (churn) makes it
 **accumulate** (leak). `cache-bloat.sh` stresses each axis on purpose and gates
 the result against `RSS_BUDGET_MIB` (default 50):

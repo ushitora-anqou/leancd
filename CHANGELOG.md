@@ -20,14 +20,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   controller) wakes the reconcile loop within `--watch-debounce` instead of
   waiting up to `--poll-interval`. Three modes — `off` (poll only, the previous
   behavior), `trigger` (a `watcher` per managed GVK pokes the loop; drift is
-  still checked via `List`), and `cache` (default; a `watcher` + reflector
-  `Store` per GVK, drift read from the `Store` with no per-pass `List`). `cache`
+  still checked via `List`), and `cache` (default; a `watcher` + size-bounded
+  `LightweightStore` per GVK, drift read from the `LightweightStore` with no
+  per-pass `List`). `cache`
   was chosen as default: measured (`bench/`) to match `trigger` on RSS (≈16 MiB
   self at 15 ns × 18 resources) while removing the per-pass apiserver `List`
   load. A watch-triggered reconcile goes through the identical
   `run_once → reconcile → lock::acquire` path, so the Lease serialization is
   unchanged.
-- **Cache-bloat benchmark** (`bench/cache-bloat.sh`): stresses the watch `Store`
+- **Cache-bloat benchmark** (`bench/cache-bloat.sh`): stresses the watch `LightweightStore`
   along the two axes that grow it — object count (`scale`) and per-object size
   (`large-obj`) — plus a create/delete `churn` leak check (idle RSS must not
   climb across cycles). All gated against `RSS_BUDGET_MIB`;
@@ -118,6 +119,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now fails its whole file (previously skipped per-document); `parse_dir`
   logs and skips the file. RSS stays ≈18–20 MiB self/tree (`make bench`),
   well under the 50 MiB budget.
+- **Documentation synced to the implementation.** `doc/user-manual.md`,
+  `doc/architecture.md`, `CLAUDE.md`, `bench/README.md`, and a stale doc comment
+  in `src/config.rs` are corrected to match the code: the subcommand count is six
+  (adds `diff`/`rollback`), the metrics lists include
+  `leancd_apply_failures_total`/`leancd_health_status`, the flag reference adds
+  `--cache-max-object-bytes`/`--health-mode`, `architecture.md` describes the
+  `LightweightStore`/`detect_from_lw` cache path and `mimalloc` and adds a
+  `resource_health.rs` module row, and `user-manual.md` gains a Resource health
+  section and the real `leancd status` output. `CLAUDE.md` now states that
+  verification tests (`cargo test`/`make test`/`make e2e`/`make bench`) may be
+  run without per-run confirmation even when long-running.
 
 ### Fixed
 
