@@ -1,4 +1,4 @@
-//! Git synchronization via the `git` CLI (shallow, polling-based).
+//! Git synchronization via the `git` CLI (shallow fetch/clone).
 //!
 //! We shell out to `git` rather than embed a Git library: the `git` CLI gives
 //! reliable repeated shallow fetches and resets through a simple, battle-tested

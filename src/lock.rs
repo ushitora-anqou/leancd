@@ -5,7 +5,7 @@
 //! To guarantee that a Git HEAD is applied atomically — never two passes at
 //! once racing on the git checkout or clobbering the state ConfigMap — each
 //! reconcile pass first acquires a `coordination.k8s.io/v1` Lease and holds it
-//! for the duration of the pass (git fetch → apply → prune → state write).
+//! for the duration of the pass (git fetch → hooks → apply → prune → state write).
 //!
 //! Acquisition uses Kubernetes optimistic concurrency: create the Lease (409 if
 //! a peer raced ahead), or, for an existing Lease that has gone stale (its

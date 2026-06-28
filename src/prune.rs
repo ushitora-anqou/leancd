@@ -2,9 +2,11 @@
 //! longer exist in Git.
 //!
 //! To stay state-light we compare the previously applied set (persisted in the
-//! state ConfigMap) against the current Git set, and delete the difference.
-//! All applies also inject a managed-by label, so a deployed resource that was
-//! taken over by another manager is identifiable.
+//! state ConfigMap) against the current Git set, and delete the difference. A
+//! safety net lists live managed-by resources for each GVK seen in the prior
+//! set and deletes any Git no longer declares, so an orphan left behind by a
+//! key dropped from state is still recovered (all applies also inject the
+//! managed-by label, which is what the safety-net list keys on).
 
 use std::collections::HashSet;
 

@@ -29,6 +29,8 @@ cargo test <name>              # run a single test by name substring
 make all                       # fmt + build + test-unit
 make fmt                       # cargo fmt + taplo fmt (Cargo.toml, taplo.toml, deny.toml)
 make bench                     # RSS benchmark against a kind cluster (see below)
+make scale                     # RSS across increasing namespace counts (./bench/scale.sh)
+make health-heavy              # RSS under health-assessment load (./bench/health-heavy.sh)
 make e2e                       # end-to-end tests: kind cluster with in-cluster
                                #   Forgejo + Lean CD Pods (Lean CD's intended
                                #   behavior). #[ignore]d, so not in nix flake check.
@@ -93,6 +95,7 @@ The project is Nix-flake based. `direnv` (`.envrc`) loads the flake, which provi
 
 ## Implementation notes worth remembering
 
+- **`mimalloc` is the global allocator** (`#[global_allocator] static GLOBAL: mimalloc::MiMalloc` in `src/main.rs`). It returns freed pages to the OS, keeping RSS low under the churn of transient drift-check allocations (see `bench/cache-bloat.sh`), and replaces the system allocator for the whole process. Its footprint is accounted for in the RSS benchmark, like `serde_saphyr`/`jiff`/`futures`.
 - **`serde_saphyr` is the YAML library** (granit-parser-based, actively maintained, no `unsafe`). Already linked transitively via `kube`, so a direct dependency adds no new code to the binary; it replaces the archived `serde_yaml` (and the once-considered `serde_yml`, now also deprecated — RUSTSEC-2025-0068). `manifest.rs` funnels every `serde_saphyr` call through `pub(crate)` helpers so a future (pre-1.0) major bump touches only that module, and its default `Options` (`strict_booleans = false`) reproduces `serde_yaml`'s YAML 1.1 boolean semantics.
 - **kube-rs v4 discovery API**: `kube::discovery::pinned_kind(client, &gvk)` returns `(ApiResource, ApiCapabilities)`; use `caps.scope` (`Scope::Cluster` vs namespaced) to pick `Api::all_with` vs `Api::namespaced_with`. SSA is `api.patch(name, &PatchParams::apply(fm).force(), &Patch::Apply(&obj))`.
 - **TLS is rustls** (`features = ["rustls-tls"]`) — OpenSSL is intentionally avoided.

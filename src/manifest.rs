@@ -1,9 +1,11 @@
 //! Parsing of Kubernetes manifests from YAML.
 //!
 //! Multi-document YAML is parsed document-by-document so the full manifest set
-//! is never held in memory at once. Manifests are kept as untyped JSON values
-//! so they can be applied generically via `DynamicObject` to any resource kind,
-//! including CRDs.
+//! is never held in memory at once. Each document is kept as serialized YAML
+//! bytes and deserialized to a `Value` only at apply time, so the held form
+//! stays the size of the source document rather than a heavier JSON tree; the
+//! untyped value is what lets Lean CD apply any resource kind (including CRDs)
+//! generically via `DynamicObject`.
 //!
 //! All `serde_saphyr` calls are funneled through the helpers below
 //! ([`parse_yaml_multi`], [`from_yaml_slice`], [`to_yaml_string`]) so a future

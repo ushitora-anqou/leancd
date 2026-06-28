@@ -146,9 +146,31 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is described as a size-bounded `LightweightStore` whose LargeTier objects
   fall back to a per-GVK `List` (not a `Store` with "no per-pass List"). The
   `metrics.rs` gauge list now includes `health_status`.
+- **Documentation re-synced to the implementation (audit pass).** Treating the
+  implementation as the source of truth, corrected further doc/comment drift:
+  `doc/architecture.md` (`RawManifest.data` is serialized YAML bytes (`Vec<u8>`)
+  deserialized only at apply time, not a held `serde_json::Value`; the module
+  count is seventeen; the chart's default image is `ghcr.io/ushitora-anqou/leancd`
+  tagged `Chart.appVersion`, not `leancd:latest`; the managed label is injected
+  at apply time, not held on `RawManifest`; `list_all` is also used for health
+  assessment; the cache-mode `detect_from_lw` path is described; the lease is
+  held across the hooks phase; the `--watch-mode` list order is `off`/`trigger`/
+  `cache`), `CLAUDE.md` (the `mimalloc` global allocator and `make scale`/
+  `make health-heavy` targets were missing), and module doc-comments in
+  `manifest.rs`, `git_sync.rs`, `prune.rs`, `lock.rs`, `drift.rs`, and
+  `reconcile.rs`.
 
 ### Fixed
 
+- **`detect_from_lw` no longer leaks non-manifest GVKs into health assessment.**
+  In `cache` watch-mode, the live set handed to resource-health assessment was
+  collected from every cached GVK rather than only the manifest set's GVKs.
+  Because `drift::find_live_match` keys on name+namespace alone (it does not
+  check GVK), an object cached under a GVK no longer present in the manifest set
+  could be mistaken for a manifest of the same name+namespace and health-
+  assessed under the wrong GVK. The collection (`collect_cached_live`) is now
+  scoped to the manifest set's GVKs, matching `collect_live` and the `List`-
+  based `detect`.
 - **YAML parse errors no longer prune Git-declared resources.** A manifest file
   that failed to parse was previously logged and skipped, which dropped its
   resources from the applied-set comparison and caused the next `prune` to

@@ -56,7 +56,7 @@ background state, shallow clones, streaming parses, and a single-threaded runtim
 
 ## 2. Module map
 
-`src/` contains sixteen library modules plus the `main` entry point. `reconcile` is the hub; `kube_util` is the only
+`src/` contains seventeen library modules plus the `main` entry point. `reconcile` is the hub; `kube_util` is the only
 boundary that touches the Kubernetes API; `main` wires the runtime.
 
 | Module | Responsibility |
@@ -125,9 +125,11 @@ provider and flushes it on exit; `status` instruments nothing.
 3. **Parse manifests.** `manifest::parse_dir` walks `work_dir/path`
    recursively, parsing every `*.yaml`/`*.yml` into untyped `RawManifest`s
    (streaming, one document at a time). `kind: List` is expanded recursively.
-4. **Inject the managed label.** Every manifest gets
-   `app.kubernetes.io/managed-by=leancd` (configurable) injected into
-   `metadata.labels`.
+4. **Inject the managed label.** The managed-by label
+   (`app.kubernetes.io/managed-by=leancd`, configurable) is injected into a
+   freshly-deserialized manifest `Value` at apply time — not held on the parsed
+   `RawManifest` — so it never inflates the in-memory manifest set. `diff`
+   compares without injecting it.
 5. **Decide full-apply vs drift-check** via `should_full_apply`:
 
    | `has_prev` | `changed` | full-apply? |
@@ -157,7 +159,9 @@ provider and flushes it on exit; `status` instruments nothing.
 7. **Prune.** `prune::prune` deletes resources present in the prior applied set
    (and, as a safety net, live managed-by resources) that are absent from the
    current Git set. A live object carrying `helm.sh/resource-policy: keep` or
-   `helm.sh/hook` is kept (hook resources are managed by the hook engine).
+   `helm.sh/hook` is kept (hook resources are managed by the hook engine). On
+   the full-teardown path this already ran inside step 6, so the step-7 prune
+   is skipped there.
 8. **Persist state.** A new `State` (new SHA, applied keys, counts, drift
    count, timestamp) is written back to the ConfigMap via SSA.
 9. **Update metrics.** `managed_resources`, `drift_detected{group,version,kind}`
@@ -235,8 +239,10 @@ fatal). A document with `kind: List` is **recursively expanded** into its
 
 `RawManifest` holds the identity extracted from the document
 (`group`/`version` from `apiVersion`, `kind`, `metadata.name`,
-`metadata.namespace`) plus the whole document as an untyped `serde_json::Value`
-(`data`). This lets Lean CD apply any resource kind — including CRDs and
+`metadata.namespace`) plus the whole document as serialized YAML bytes
+(`data: Vec<u8>`, deserialized to a `Value` only at apply time so it stays the
+size of the source YAML rather than a heavier JSON tree). This lets Lean CD
+apply any resource kind — including CRDs and
 cluster-scoped resources — through `DynamicObject` without typed structs.
 
 Before apply, `inject_managed_label` writes the configured label
@@ -262,8 +268,8 @@ would dominate RSS on large clusters, so it is avoided entirely.
   value and patches it with `Patch::Apply(&obj)` under
   `PatchParams::apply(field_manager).force()`, which always claims ownership of
   conflicting fields.
-- **List / Delete.** `list_all` supports an optional label selector (used by drift
-  and prune); `delete` uses foreground cascade deletion
+- **List / Delete.** `list_all` supports an optional label selector (used by
+  drift, prune, and health assessment); `delete` uses foreground cascade deletion
   (`DeleteParams::foreground()` → `propagationPolicy: Foreground`) so an owner
   resource is held behind a `foregroundDeletion` finalizer until its dependents
   are gone. The same policy is used for Helm-hook and full-teardown deletions.
@@ -281,16 +287,16 @@ resources (`watch.rs`) so a cluster-side edit (`kubectl`, another controller)
 wakes the reconcile loop within the debounce window instead of waiting up to
 `poll_interval`. Three `--watch-mode`s, selected at runtime:
 
+- `off`: poll-only — the original behavior.
+- `trigger`: a `watcher` stream per managed GVK pokes a `Notify` on any
+  `touched` event (an apply OR a delete); drift detection stays the List-based
+  path below. Holds no object cache (the leanest mode).
 - `cache` (default): a size-bounded `LightweightStore` per managed GVK (the
   watcher stream consumed directly, no reflector). Objects up to
   `--cache-max-object-bytes` are cached in full (SmallTier) and drift-checked
   from the cache (`drift::detect_from_lw`) with **no per-pass `List`**; larger
   objects are tracked by key only (LargeTier) and drift-checked via a per-GVK
   `List` fallback, so the cache's RSS does not grow with per-object payload size.
-- `trigger`: a `watcher` stream per managed GVK pokes a `Notify` on any
-  `touched` event (an apply OR a delete); drift detection stays the List-based
-  path below. Holds no object cache (the leanest mode).
-- `off`: poll-only — today's original behavior.
 
 The default is `cache`: it was measured (`bench/`, 15 ns × 18 resources) to
 match `trigger` on RSS (≈16 MiB self, far under the 50 MiB budget) while
@@ -322,6 +328,13 @@ If any drift is found, `reconcile` calls `apply_all` to re-apply the managed
 set. Per-GVK drift counts are written to the `leancd_drift_detected` metric
 (the gauge vec is reset each pass, so a drift that resolved clears on the next
 pass).
+
+In `cache` watch-mode `reconcile` calls `drift::detect_from_lw` instead of
+`detect`: SmallTier objects are subset-checked straight from the watch-backed
+`LightweightStore` (no per-pass `List`), LargeTier objects (over
+`--cache-max-object-bytes`) fall back to one `List` per GVK, and Absent keys
+are reported as missing drift. Both paths share `specs_differ` and the
+`spec_subset` helper, so the comparison semantics are identical.
 
 ## 9. Pruning — two signals
 
@@ -414,7 +427,7 @@ footprint at collection time.
   `Reconciler::reconcile`, but only one pass at a time is allowed cluster-wide:
   `reconcile` first acquires a `coordination.k8s.io/v1` Lease
   (`{state-configmap}-reconcile-lock`, see `lock.rs`) and holds it for the whole
-  pass (git fetch → apply → prune → state write). A pass that finds the lease
+  pass (git fetch → hooks → apply → prune → state write). A pass that finds the lease
   held by another process skips with an INFO log (busy skip) rather than
   erroring, so `sync_errors` is not incremented and the controller does not
   back off. A crashed holder's lease is reclaimed after `lock_lease_duration`
@@ -447,7 +460,8 @@ The shipped Helm chart ([`../charts/leancd/`](../charts/leancd/)) renders:
   (Lean CD applies arbitrary kinds including CRDs and cluster-scoped resources,
   so the default is broad — narrow it in production with `rbac.namespaced=true`),
   and
-- the `Deployment` (image `leancd:latest`, `imagePullPolicy: IfNotPresent`,
+- the `Deployment` (image `ghcr.io/ushitora-anqou/leancd` tagged
+  `Chart.appVersion`, `imagePullPolicy: IfNotPresent`,
   `args: ["controller"]`, `LEANCD_*` env, credentials via `envFrom` a Secret
   marked `optional`, resources request 32Mi/50m and limit 128Mi/200m).
 

@@ -72,9 +72,10 @@ impl Reconciler {
     }
 
     /// Validate the desired state via a server-side dry-run apply (no mutation,
-    /// no state, no metrics, no hooks/prune). Acquires the reconcile Lease like
-    /// `run_once` so the git checkout stays consistent, then short-circuits in
-    /// `reconcile_inner` after the dry-run apply. Used by `sync --dry-run`.
+    /// no state, no metrics, no hooks/prune). Goes through `reconcile()` (so the
+    /// reconcile Lease is acquired as in `run_once`, keeping the git checkout
+    /// consistent), then short-circuits in `reconcile_inner` after the dry-run
+    /// apply. Used by `sync --dry-run`.
     pub async fn dry_run(&self) -> Result<()> {
         self.reconcile().await
     }
