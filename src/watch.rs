@@ -56,8 +56,10 @@ pub enum WatchMode {
     /// Watch managed-by resources and poke the reconcile loop on any change.
     /// Drift detection stays List-based. Minimal RSS.
     Trigger,
-    /// Watch + cache managed-by resources in a `Store`; drift detection reads
-    /// from the cache. Larger RSS (scales with object count).
+    /// Watch + a size-bounded `LightweightStore` per managed GVK (small objects
+    /// cached in full, large ones by key only with a per-GVK `List` fallback);
+    /// drift detection reads from the cache where possible. RSS is bounded by
+    /// `--cache-max-object-bytes`, not object count.
     Cache,
 }
 

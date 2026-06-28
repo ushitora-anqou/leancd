@@ -21,10 +21,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   waiting up to `--poll-interval`. Three modes — `off` (poll only, the previous
   behavior), `trigger` (a `watcher` per managed GVK pokes the loop; drift is
   still checked via `List`), and `cache` (default; a `watcher` + size-bounded
-  `LightweightStore` per GVK, drift read from the `LightweightStore` with no
-  per-pass `List`). `cache`
+  `LightweightStore` per GVK, drift read from the `LightweightStore` — small
+  objects checked from the cache with no per-pass `List`, larger objects via
+  a per-GVK `List` fallback). `cache`
   was chosen as default: measured (`bench/`) to match `trigger` on RSS (≈16 MiB
-  self at 15 ns × 18 resources) while removing the per-pass apiserver `List`
+  self at 15 ns × 18 resources) while removing most of the per-pass apiserver `List`
   load. A watch-triggered reconcile goes through the identical
   `run_once → reconcile → lock::acquire` path, so the Lease serialization is
   unchanged.
@@ -80,6 +81,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Secret management guidance**: the user manual documents delegating Secret
   management to External Secrets Operator / Sealed Secrets (Lean CD applies
   plain YAML, so Secrets should not be committed in plaintext).
+- **Helm chart: all `LEANCD_*` flags exposed via `config.*`.** `values.yaml`,
+  `values.schema.json`, and the Deployment env now cover `watchMode`,
+  `watchDebounce`, `healthMode`, `healthStaleFactor`, `hookTimeoutSecs`,
+  `backoffBase`, `backoffMax`, and `shutdownTimeoutSecs` (previously only set
+  via the CLI default). Values match the CLI defaults, so existing installs
+  are unaffected.
 
 ### Changed
 
@@ -117,7 +124,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   semantics — no behavior change for `no`/`off`/`yes`/`on`) and funnels all
   `serde_saphyr` calls through `pub(crate)` helpers. An unparseable document
   now fails its whole file (previously skipped per-document); `parse_dir`
-  logs and skips the file. RSS stays ≈18–20 MiB self/tree (`make bench`),
+  propagates the error and fails the pass (fail-fast), so a malformed file
+  never silently drops its resources from the Git set. RSS stays ≈18–20 MiB self/tree (`make bench`),
   well under the 50 MiB budget.
 - **Documentation synced to the implementation.** `doc/user-manual.md`,
   `doc/architecture.md`, `CLAUDE.md`, `bench/README.md`, and a stale doc comment
@@ -130,6 +138,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   section and the real `leancd status` output. `CLAUDE.md` now states that
   verification tests (`cargo test`/`make test`/`make e2e`/`make bench`) may be
   run without per-run confirmation even when long-running.
+- **Corrected stale documentation and comments to match the implementation.**
+  `parse_dir` is now documented as fail-fast (`doc/architecture.md`, here in
+  the changelog): it propagates the error and fails the pass rather than
+  logging-and-skipping the file. The watch `cache` mode (`README.md`,
+  `doc/user-manual.md`, `src/cli.rs`, `src/watch.rs`, `src/reconcile.rs`, here)
+  is described as a size-bounded `LightweightStore` whose LargeTier objects
+  fall back to a per-GVK `List` (not a `Store` with "no per-pass List"). The
+  `metrics.rs` gauge list now includes `health_status`.
 
 ### Fixed
 

@@ -64,6 +64,11 @@ listener — metrics reach Grafana via the OTLP collector set with
 | `config.branch` / `config.path` | `main` / `.` | Branch and path globs to sync |
 | `config.pollInterval` | `60s` | Reconcile poll interval |
 | `config.cacheMaxObjectBytes` | `12288` | In `cache` watch mode, max serialized bytes of an object cached in full; larger → key-only + per-GVK List drift fallback. Size-based, any kind |
+| `config.watchMode` | `cache` | How cluster-side drift wakes the loop: `off` (poll only), `trigger` (watch poke, List drift), `cache` (watch + LightweightStore; default) |
+| `config.healthMode` | `on` | `on` (default) runs Argo CD-style resource health each pass; `off` skips it + its metric |
+| `config.backoffBase` / `config.backoffMax` | `5s` / `10m` | Exponential backoff on consecutive sync failures (resets to `pollInterval` on success) |
+| `config.hookTimeoutSecs` | `300` | Per Job/Pod hook completion timeout before it is treated as failed |
+| `config.shutdownTimeoutSecs` | `28` | Grace for the in-flight pass on SIGTERM (keep ≤ `terminationGracePeriodSeconds`) |
 | `metrics.otlpEndpoint` | `http://otel-collector:4318` | OTLP/HTTP collector endpoint (bring your own collector) |
 | `rbac.namespaced` | `false` | Bind permissions to the namespace only (+ NetworkPolicy) |
 | `dashboards.enabled` | `true` | Ship the Grafana dashboard ConfigMap |

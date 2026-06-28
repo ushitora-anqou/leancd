@@ -66,6 +66,14 @@ config:
   lockLeaseDurationSecs: "60"     # reconcile-pass mutual exclusion (Lease) — see lock.rs
   lockWaitTimeoutSecs: "30"
   cacheMaxObjectBytes: "12288"    # in `cache` watch mode, max serialized bytes of an object cached in full (SmallTier); larger → key-only (LargeTier) + per-GVK List drift fallback. Size-based, any kind. See watch.rs.
+  watchMode: cache            # off (poll only) | trigger (watch poke, List drift) | cache (default: watch + LightweightStore)
+  watchDebounce: 500ms        # collapses a burst of watch events into one reconcile pass
+  healthMode: "on"            # on (default): Argo CD-style resource health each pass | off: skip it + its metric
+  healthStaleFactor: "10"     # leancd health reports stale when last sync older than pollInterval × this
+  hookTimeoutSecs: "300"      # per Job/Pod hook completion timeout before it is treated as failed
+  backoffBase: 5s             # exponential backoff base after a failed pass (resets to pollInterval on success)
+  backoffMax: 10m             # exponential backoff cap
+  shutdownTimeoutSecs: "28"   # grace for the in-flight pass on SIGTERM (≤ terminationGracePeriodSeconds)
 
 # --- Metrics (OTEL_* env) ---
 # leancd runs no HTTP listener; it pushes metrics over OTLP/HTTP to a collector

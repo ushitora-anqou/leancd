@@ -152,7 +152,9 @@ pub struct CommonArgs {
 
     /// How cluster-side drift is detected: `off` (periodic poll only), `trigger`
     /// (watch wakes the loop; drift checked via the existing List), or `cache`
-    /// (watch + Store cache; drift read from the cache, so no per-pass List).
+    /// (watch + a size-bounded `LightweightStore` per GVK: small objects
+    /// cached in full and drift-checked from the cache; larger objects are
+    /// tracked by key only and drift-checked via a per-GVK `List` fallback).
     /// See `--watch-debounce`. Defaults to `cache` — measured (see `bench/`) to
     /// stay well under the RSS budget while avoiding per-poll apiserver Lists.
     #[arg(long, env = "LEANCD_WATCH_MODE", default_value = "cache")]

@@ -255,7 +255,8 @@ impl Reconciler {
                 post_error = Some(format!("post-sync hook failed: {reason}"));
             }
         } else {
-            // Cache mode drift-checks against the watch-backed Store (no List);
+            // Cache mode drift-checks against the watch-backed `LightweightStore`
+            // (SmallTier from the cache; LargeTier via a per-GVK `List` fallback);
             // Trigger/Off modes List live objects as before.
             let (d, l) = if self.cfg.watch_mode == watch::WatchMode::Cache {
                 let stores = self

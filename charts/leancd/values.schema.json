@@ -80,7 +80,15 @@
         "workDir": { "type": "string" },
         "lockLeaseDurationSecs": { "type": "string" },
         "lockWaitTimeoutSecs": { "type": "string" },
-        "cacheMaxObjectBytes": { "type": "string" }
+        "cacheMaxObjectBytes": { "type": "string" },
+        "watchMode": { "type": "string" },
+        "watchDebounce": { "type": "string" },
+        "healthMode": { "type": "string" },
+        "healthStaleFactor": { "type": "string" },
+        "hookTimeoutSecs": { "type": "string" },
+        "backoffBase": { "type": "string" },
+        "backoffMax": { "type": "string" },
+        "shutdownTimeoutSecs": { "type": "string" }
       }
     },
     "metrics": {

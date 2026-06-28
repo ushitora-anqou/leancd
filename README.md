@@ -169,8 +169,11 @@ Lean CD holds no cluster-wide cache: every reconciliation issues direct
 `List`/`Get`/`Patch` calls for exactly the resources declared in Git. In
 `off`/`trigger` `--watch-mode` it holds no object cache at all — each pass
 fetches only what it needs and discards it. The default `cache` mode holds only
-a per-GVK managed-by `Store` (kept shallow by the managed-by label, measured to
-stay well under budget) so steady-state drift-check needs no per-pass `List`;
+a per-GVK
+size-bounded `LightweightStore` (small objects cached in full, larger ones by
+key only, measured to stay well under budget) so a steady-state drift-check of
+small objects needs no per-pass `List` (larger objects fall back to one `List`
+per GVK);
 it is still not a cluster-wide cache or background store. Git history is kept
 shallow (depth 1), YAML is parsed one document at a time, runtime state is a
 single ConfigMap plus a managed-by label, and the runtime is single-threaded

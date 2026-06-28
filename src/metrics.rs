@@ -32,7 +32,8 @@ struct MetricsState {
 /// Container for Lean CD's OpenTelemetry instruments.
 ///
 /// `Counter`s are incremented directly; the gauges (`last_success_epoch`,
-/// `managed_resources`, `drift_detected`, `rss_bytes`) are observable gauges
+/// `managed_resources`, `drift_detected`, `rss_bytes`, `health_status`) are
+/// observable gauges
 /// backed by the shared `MetricsState` and reported on each collection. The
 /// `_gauges` handles must outlive the meter for the callbacks to stay
 /// registered, so they are held here for the life of the struct.

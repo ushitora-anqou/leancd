@@ -222,9 +222,11 @@ already linked transitively via `kube`, so depending on it directly adds no
 new code to the binary; it replaces the archived, deprecated `serde_yaml`.
 `manifest.rs` funnels every `serde_saphyr` call through `pub(crate)` helpers,
 and its default `Options` (`strict_booleans = false`) reproduce `serde_yaml`'s
-YAML 1.1 boolean semantics. An unparseable document now fails the whole file
-(previously the bad document was skipped and the rest kept); the caller
-(`parse_dir`) logs and skips the file.
+YAML 1.1 boolean semantics. An unparseable document now fails its whole file
+(previously the bad document was skipped and the rest kept); `parse_dir`
+propagates that error and fails the entire sync pass (fail-fast) rather than
+skipping the file — skipping would drop the file's resources from the Git set
+and get them pruned on the next pass.
 
 Each document becomes a `RawManifest` if it has `apiVersion`, `kind`, and
 `metadata.name`; non-mapping, null, or incomplete documents are skipped (not

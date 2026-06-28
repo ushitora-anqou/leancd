@@ -59,6 +59,28 @@ spec:
             # drift-checked via a per-GVK List. Size-based, any kind. See watch.rs.
             - name: LEANCD_CACHE_MAX_OBJECT_BYTES
               value: {{ .Values.config.cacheMaxObjectBytes | quote }}
+            # How cluster-side drift wakes the loop: off | trigger | cache (default).
+            # See watch.rs and --watch-debounce.
+            - name: LEANCD_WATCH_MODE
+              value: {{ .Values.config.watchMode | quote }}
+            - name: LEANCD_WATCH_DEBOUNCE
+              value: {{ .Values.config.watchDebounce | quote }}
+            # Argo CD-style resource health: on (default) | off (skips it + its metric).
+            - name: LEANCD_HEALTH_MODE
+              value: {{ .Values.config.healthMode | quote }}
+            - name: LEANCD_HEALTH_STALE_FACTOR
+              value: {{ .Values.config.healthStaleFactor | quote }}
+            # Per Job/Pod hook completion timeout before it is treated as failed.
+            - name: LEANCD_HOOK_TIMEOUT_SECS
+              value: {{ .Values.config.hookTimeoutSecs | quote }}
+            # Exponential backoff on consecutive sync failures (resets to pollInterval on success).
+            - name: LEANCD_BACKOFF_BASE
+              value: {{ .Values.config.backoffBase | quote }}
+            - name: LEANCD_BACKOFF_MAX
+              value: {{ .Values.config.backoffMax | quote }}
+            # Grace for the in-flight pass on SIGTERM (≤ terminationGracePeriodSeconds).
+            - name: LEANCD_SHUTDOWN_TIMEOUT_SECS
+              value: {{ .Values.config.shutdownTimeoutSecs | quote }}
             # --- metrics: OTLP/HTTP push to an OpenTelemetry Collector ---
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.metrics.otlpEndpoint | quote }}
