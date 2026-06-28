@@ -134,11 +134,11 @@ fn value_to_manifest(value: Value) -> Result<Option<RawManifest>> {
 /// resource is expanded into its `items`, so a `List` behaves like separate
 /// documents.
 ///
-/// Empty documents are skipped. An unparseable document fails the whole string
-/// (the caller — [`parse_dir`] — logs and skips the file); this is stricter
-/// than the prior `serde_yaml` streaming path, which skipped a single bad
-/// document and kept the rest, but safer: a file with a malformed document is
-/// not partially applied.
+/// Empty documents are skipped. An unparseable document fails the whole
+/// string, so [`parse_dir`] aborts the directory parse on the first malformed
+/// file (fail-fast): a file with a malformed document is never partially
+/// applied, and — crucially — its resources are never silently dropped from
+/// the Git set only to be pruned on the next pass.
 pub fn parse_str(yaml: &str) -> Result<Vec<RawManifest>> {
     let mut out = Vec::new();
     for value in parse_yaml_multi(yaml)? {
@@ -173,12 +173,19 @@ pub async fn parse_dir(root: &Path) -> Result<Vec<RawManifest>> {
     let mut out = Vec::new();
     for file in files {
         let contents = tokio::fs::read_to_string(&file).await?;
-        match parse_str(&contents) {
-            Ok(ms) => out.extend(ms),
-            Err(e) => {
-                tracing::warn!(path = %file.display(), error = %e, "failed to parse manifest file");
-            }
-        }
+        // Fail-fast: an unparseable file aborts the whole directory parse
+        // rather than being skipped. Skipping would omit its resources from
+        // `current_keys`, and the reconcile pass would then prune them —
+        // deleting Git-declared resources because of a typo in one file. An io
+        // error on `read_to_string` already fails fast the same way above; a
+        // parse error must too.
+        let ms = parse_str(&contents).map_err(|e| {
+            Error::Manifest(format!(
+                "failed to parse manifest file {}: {e}",
+                file.display()
+            ))
+        })?;
+        out.extend(ms);
     }
     Ok(out)
 }
@@ -569,5 +576,51 @@ items: []
             "all 3 ConfigMaps under matched prod dirs must be parsed"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn parse_dir_fails_on_unparseable_file() {
+        // A malformed YAML file must fail the whole dir parse (fail-fast): the
+        // caller (reconcile) then aborts the pass, so the resources declared in
+        // the unparseable file are never silently dropped from `current_keys`
+        // and pruned on the next pass. Skipping the file (the old behavior)
+        // would delete previously-applied resources that are still declared in
+        // Git.
+        let dir = std::env::temp_dir().join(format!("leancd-parsedir-fail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("ok.yaml"),
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ok\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("bad.yaml"),
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: bad\n  labels: {\n",
+        )
+        .unwrap();
+        let result = parse_dir(&dir).await;
+        assert!(
+            result.is_err(),
+            "parse_dir must fail (not skip) an unparseable file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn parse_dir_succeeds_when_all_files_valid() {
+        // Guard: a dir of only valid files still parses to completion.
+        let dir = std::env::temp_dir().join(format!("leancd-parsedir-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("ok.yaml"),
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: ok\n",
+        )
+        .unwrap();
+        let result = parse_dir(&dir).await.unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "ok");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

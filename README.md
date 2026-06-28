@@ -18,6 +18,11 @@ by an automated benchmark (see [bench/](bench/)).
 - Prunes resources removed from Git, using **foreground cascade** deletion
   (`propagationPolicy: Foreground`) so dependents are removed before their
   owners — the same policy used for Helm-hook and full-teardown deletions.
+- **Fail-fast on malformed manifests**: a YAML parse error in one file fails
+  the whole sync rather than silently skipping the file — a skipped file would
+  drop its resources from the applied set and get them pruned, so a typo in one
+  file must never delete a previously-applied resource. The error lands in
+  `state.last_error` (visible via `leancd status` / `leancd health`).
 - Honors **Helm hooks** in pre-rendered manifests with Argo CD-equivalent
   semantics (`pre-install`/`pre-upgrade` → before the apply, `post-install`/
   `post-upgrade` → after; `pre-delete`/`post-delete` on full teardown), plus

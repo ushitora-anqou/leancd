@@ -2491,3 +2491,71 @@ async fn rollback_to_previous_commit() {
         "rollback should (transiently) restore the v1 data (k=1)"
     );
 }
+
+/// Scenario: a YAML parse error in one manifest file aborts the whole sync
+/// (fail-fast) and does NOT prune the resource that file declares. Regression
+/// for the parse_dir skip bug — skipping an unparseable file dropped its keys
+/// from `current_keys`, so the next prune deleted a still-Git-declared resource.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn parse_error_aborts_and_keeps_resources() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("parse-error");
+    fj.create_repo(&env.repo, false);
+    let clone = common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "keep.yaml".into(),
+                manifests::configmap("pe-keep", "default", &[("k", "v")]),
+            ),
+            (
+                "break.yaml".into(),
+                manifests::configmap("pe-break", "default", &[("k", "v")]),
+            ),
+        ],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+
+    let r1 = common::leancd::sync(&args);
+    assert!(r1.success, "1st sync failed: {}", r1.stderr);
+    assert!(common::kubectl::exists("default", "configmap", "pe-keep"));
+    assert!(common::kubectl::exists("default", "configmap", "pe-break"));
+
+    // Corrupt break.yaml with an unclosed flow mapping (a YAML syntax error).
+    common::git::push_more(
+        &clone,
+        fj,
+        &env.repo,
+        &[(
+            "break.yaml".into(),
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: pe-break\n  namespace: default\n  labels: {\n".into(),
+        )],
+    );
+
+    // The sync must fail on the parse error and NOT prune pe-break.
+    let r2 = common::leancd::sync(&args);
+    assert!(
+        !r2.success,
+        "sync should fail on a parse error, but exited {}: stderr={}",
+        r2.exit_code, r2.stderr
+    );
+
+    // The previously-applied resource is still in the cluster (not pruned).
+    assert!(
+        common::kubectl::exists("default", "configmap", "pe-break"),
+        "pe-break must survive a parse error (fail-fast), not be pruned"
+    );
+    assert!(common::kubectl::exists("default", "configmap", "pe-keep"));
+
+    // state.last_error records the parse failure.
+    let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
+    let s = state_json(&st);
+    let last_error = s["last_error"].as_str().unwrap_or("");
+    assert!(
+        last_error.to_lowercase().contains("parse"),
+        "state.last_error should record the parse error, got: {last_error}"
+    );
+}

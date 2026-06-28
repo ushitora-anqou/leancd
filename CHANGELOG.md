@@ -112,6 +112,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   logs and skips the file. RSS stays ≈18–20 MiB self/tree (`make bench`),
   well under the 50 MiB budget.
 
+### Fixed
+
+- **YAML parse errors no longer prune Git-declared resources.** A manifest file
+  that failed to parse was previously logged and skipped, which dropped its
+  resources from the applied-set comparison and caused the next `prune` to
+  delete them — a typo in one file could remove previously-applied resources
+  (a Deployment, via foreground cascade, included). Parsing now fails the whole
+  sync pass (fail-fast), so the cluster keeps its last-known-good state until
+  the file is fixed; the error is recorded in `state.last_error` and surfaces
+  via `leancd status` / `leancd health`.
+
 ## [0.1.1] - 2026-06-22
 
 ### Added — production readiness
