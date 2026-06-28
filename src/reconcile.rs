@@ -22,7 +22,11 @@ use crate::lock;
 use crate::manifest::{self, RawManifest};
 use crate::metrics::Metrics;
 use crate::watch;
-use crate::{drift, prune, resource_health, state};
+use crate::{
+    drift,
+    prune::{self, ResourceKey},
+    resource_health, state,
+};
 
 /// Drives a single repository-sync target.
 pub struct Reconciler {
@@ -182,6 +186,7 @@ impl Reconciler {
         }
 
         let mut drifts: Vec<drift::DriftItem> = Vec::new();
+        let mut apply_failures: Vec<ResourceKey> = Vec::new();
         let mut post_error: Option<String> = None;
         let mut pruned = 0usize;
         // Live objects for the health assessment; populated on every pass that
@@ -232,7 +237,7 @@ impl Reconciler {
             if let Some((_, reason)) = pre.failures.first() {
                 return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
             }
-            self.apply_all(&classified.main, false).await?;
+            apply_failures = self.apply_all(&classified.main, false).await?;
             if self.cfg.health_enabled {
                 health_live = drift::collect_live(&self.client, &classified.main, &self.cfg)
                     .await
@@ -280,7 +285,7 @@ impl Reconciler {
                 if let Some((_, reason)) = pre.failures.first() {
                     return Err(Error::Hook(format!("pre-sync hook failed: {reason}")));
                 }
-                self.apply_all(&classified.main, false).await?;
+                apply_failures = self.apply_all(&classified.main, false).await?;
                 let post = self
                     .hook_phase(
                         guard,
@@ -336,12 +341,18 @@ impl Reconciler {
         new_state.drift_count = drift_count;
         new_state.managed_count = current_keys.len();
         new_state.applied = current_keys.clone();
+        new_state.apply_failures = apply_failures.clone();
         new_state.health = health_summary.clone();
         self.touch_lease(guard).await;
         state::write(&self.client, &self.cfg, &new_state).await?;
 
         self.metrics
             .set_managed_resources(current_keys.len() as i64);
+        if !apply_failures.is_empty() {
+            self.metrics
+                .apply_failures
+                .add(apply_failures.len() as u64, &[]);
+        }
         // Per-GVK drift counts; reset first so resolved drifts clear next pass.
         self.metrics.reset_drift();
         let mut drift_by_gvk: HashMap<(String, String, String), i64> = HashMap::new();
@@ -400,13 +411,19 @@ impl Reconciler {
     }
 
     /// Apply every manifest, sharing one API-discovery lookup per resource kind.
-    /// Individual apply failures are logged but do not abort the pass. When
-    /// `dry_run` is true each patch is a server-side dry run (no mutation) —
-    /// used by `sync --dry-run` to validate the desired set.
-    async fn apply_all(&self, manifests: &[RawManifest], dry_run: bool) -> Result<()> {
+    /// Individual apply failures are logged but do not abort the pass; the keys
+    /// that failed (discovery or apply error) are returned so the caller can
+    /// surface them in state/metrics — the next pass's drift check reports them
+    /// missing and re-applies them. When `dry_run` is true each patch is a
+    /// server-side dry run (no mutation) — used by `sync --dry-run`.
+    async fn apply_all(
+        &self,
+        manifests: &[RawManifest],
+        dry_run: bool,
+    ) -> Result<Vec<ResourceKey>> {
         let mut cache = kube_util::DiscoveryCache::new();
         let mut applied = 0usize;
-        let mut failed = 0usize;
+        let mut failed_keys: Vec<ResourceKey> = Vec::new();
         for m in manifests {
             let gk = m.gvk();
             let (ar, caps) = match cache
@@ -416,7 +433,7 @@ impl Reconciler {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!(error = %e, ?gk, "discovery failed; skipping resource");
-                    failed += 1;
+                    failed_keys.push(ResourceKey::from_manifest(m));
                     continue;
                 }
             };
@@ -461,16 +478,20 @@ impl Reconciler {
                         dry_run,
                         result = "failed",
                     );
-                    failed += 1;
+                    failed_keys.push(ResourceKey::from_manifest(m));
                 }
             }
         }
-        if failed > 0 {
-            tracing::warn!(applied, failed, "apply pass completed with failures");
+        if !failed_keys.is_empty() {
+            tracing::warn!(
+                applied,
+                failed = failed_keys.len(),
+                "apply pass completed with failures"
+            );
         } else {
             tracing::debug!(applied, "apply pass complete");
         }
-        Ok(())
+        Ok(failed_keys)
     }
 
     /// Run one hook phase and record its outcome metrics, returning the outcome.

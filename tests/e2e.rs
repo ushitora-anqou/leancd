@@ -2559,3 +2559,57 @@ async fn parse_error_aborts_and_keeps_resources() {
         "state.last_error should record the parse error, got: {last_error}"
     );
 }
+
+/// Scenario: a manifest for an unknown kind (API discovery fails) is recorded
+/// in state.apply_failures and counted in the metric, but does not abort the
+/// pass or set last_error — so it does not trip the health probe. It self-heals
+/// on the next pass once the kind exists.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires docker + kind; run with: make e2e"]
+async fn apply_failure_recorded_without_aborting() {
+    let f = common::Fixture::get();
+    let fj = f.forgejo();
+    let env = common::env::TestEnv::new("apply-failure");
+    fj.create_repo(&env.repo, false);
+    // A known resource plus one for a kind no CRD installs (discovery fails).
+    let _ = common::git::push_files(
+        fj,
+        &env.repo,
+        &[
+            (
+                "cm.yaml".into(),
+                manifests::configmap("af-cm", "default", &[("k", "v")]),
+            ),
+            (
+                "bogus.yaml".into(),
+                "apiVersion: leancd.example.com/v1\nkind: BogusKind\nmetadata:\n  name: af-bogus\n  namespace: default\n".into(),
+            ),
+        ],
+    );
+    let args = env.sync_args(&fj.https_url(&env.repo));
+
+    let res = common::leancd::sync(&args);
+    // The pass succeeds overall (the known CM applies); the bogus kind is a
+    // per-resource apply failure recorded in state, not a fatal error.
+    assert!(res.success, "sync should succeed overall: {}", res.stderr);
+    assert!(common::kubectl::exists("default", "configmap", "af-cm"));
+
+    let st = common::kubectl::get_json(&env.namespace, "configmap", &env.state_cm);
+    let s = state_json(&st);
+    let failures = s["apply_failures"]
+        .as_array()
+        .expect("apply_failures is an array");
+    assert_eq!(
+        failures.len(),
+        1,
+        "exactly the bogus kind should fail: {failures:?}"
+    );
+    assert_eq!(failures[0]["kind"], serde_json::json!("BogusKind"));
+    assert_eq!(failures[0]["name"], serde_json::json!("af-bogus"));
+    // Not fatal: last_error is not set by an apply failure (would trip the probe).
+    assert!(
+        s["last_error"].is_null(),
+        "apply failure must not set last_error, got: {:?}",
+        s["last_error"]
+    );
+}

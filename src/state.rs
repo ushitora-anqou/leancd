@@ -49,6 +49,13 @@ pub struct State {
     pub drift_count: usize,
     pub managed_count: usize,
     pub applied: Vec<ResourceKey>,
+    /// Resource keys whose server-side apply failed on the last pass (API
+    /// discovery or apply error). Self-healing: the next pass's drift check
+    /// reports them missing and re-applies them, so this is a visibility signal
+    /// only — it is never written to `last_error`, and so does not trip the
+    /// health probe (liveness/readiness). Empty on a clean pass.
+    #[serde(default)]
+    pub apply_failures: Vec<ResourceKey>,
     /// Aggregate resource-health summary: the worst health across managed
     /// resources with a built-in health check, plus per-status counts.
     /// Populated by `reconcile`'s health assessment; default (all-zero,
@@ -141,6 +148,7 @@ mod tests {
                 key("apps", "Deployment", "d", Some("default")),
                 key("", "ConfigMap", "c", None),
             ],
+            apply_failures: vec![key("apps", "Deployment", "x", Some("default"))],
             health: HealthSummary {
                 worst: Some("Progressing".into()),
                 worst_message: Some("Waiting for rollout to finish".into()),
@@ -159,6 +167,8 @@ mod tests {
         assert_eq!(back.applied[0].name, "d");
         assert_eq!(back.applied[0].namespace.as_deref(), Some("default"));
         assert!(back.applied[1].namespace.is_none());
+        assert_eq!(back.apply_failures.len(), 1);
+        assert_eq!(back.apply_failures[0].name, "x");
         assert_eq!(back.health.worst.as_deref(), Some("Progressing"));
         assert_eq!(back.health.progressing, 2);
         assert_eq!(
@@ -204,6 +214,31 @@ mod tests {
         let s = State::from_data(Some(&data));
         assert!(s.applied.is_empty());
         assert_eq!(s.sync_count, 0);
+    }
+
+    #[test]
+    fn legacy_state_without_apply_failures_defaults_empty() {
+        // A state ConfigMap written by an older Lean CD (before apply_failures)
+        // must deserialize with an empty apply_failures, not an error — the
+        // field carries #[serde(default)] for exactly this rollout. Build the
+        // legacy blob from a real State and strip only apply_failures.
+        let full = State {
+            last_sha: Some("abc".into()),
+            sync_count: 1,
+            applied: vec![key("", "ConfigMap", "c", None)],
+            ..Default::default()
+        };
+        let mut json = serde_json::to_value(&full).unwrap();
+        json.as_object_mut().unwrap().remove("apply_failures");
+        let mut data = BTreeMap::new();
+        data.insert("state".into(), json.to_string());
+        let s = State::from_data(Some(&data));
+        assert_eq!(s.last_sha.as_deref(), Some("abc"));
+        assert_eq!(s.applied.len(), 1);
+        assert!(
+            s.apply_failures.is_empty(),
+            "missing apply_failures must default to empty"
+        );
     }
 
     #[test]

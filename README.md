@@ -43,6 +43,11 @@ by an automated benchmark (see [bench/](bench/)).
 - Metrics exported over OTLP/HTTP (push), including `leancd_rss_bytes` and
   `leancd_health_status`; a ready Grafana dashboard ships in the chart
   ([`charts/leancd/dashboards/`](charts/leancd/dashboards/)).
+- **Per-resource apply-failure visibility**: a server-side apply that fails on
+  one resource (unknown kind, admission denial, …) is recorded in
+  `state.apply_failures` and the `leancd_apply_failures_total` metric, and
+  listed by `leancd status` — without aborting the pass or tripping the probe,
+  since the resource self-heals on the next pass's drift check.
 - **Operations CLI**: `leancd diff` prints the desired-vs-live drift (read-only),
   `sync --dry-run` validates via a server-side dry-run (no mutation), and
   `leancd rollback [--to <sha>]` re-syncs to a past commit.

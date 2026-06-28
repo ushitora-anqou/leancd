@@ -223,6 +223,23 @@ async fn run_status(cfg: config::Config) -> Result<()> {
             if let Some(e) = &s.last_error {
                 println!("  last error: {e}");
             }
+            if !s.apply_failures.is_empty() {
+                println!(
+                    "  apply failures: {n} (self-heal next pass; not reflected in last_error)",
+                    n = s.apply_failures.len()
+                );
+                for key in &s.apply_failures {
+                    let gvk = if key.group.is_empty() {
+                        format!("{}/{}", key.version, key.kind)
+                    } else {
+                        format!("{}/{}/{}", key.group, key.version, key.kind)
+                    };
+                    match &key.namespace {
+                        Some(ns) => println!("    [{gvk} {ns}/{name}]", name = key.name),
+                        None => println!("    [{gvk} {name}]", name = key.name),
+                    }
+                }
+            }
         }
     }
     Ok(())

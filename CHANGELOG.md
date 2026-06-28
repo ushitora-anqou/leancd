@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Per-resource apply-failure visibility** (`state.apply_failures`,
+  `leancd_apply_failures_total`, `leancd status`): a server-side apply that
+  fails on one resource (API discovery or apply error) is now recorded by key
+  in the state ConfigMap, counted in the metric, and listed by `leancd status`.
+  It is a visibility signal only — never written to `last_error`, so it does
+  not trip the liveness/readiness probe. The resource self-heals on the next
+  pass (the drift check reports it missing and re-applies it).
 - **Cluster-side drift detection via watch** (`--watch-mode`): Lean CD now
   watches its managed-by resources so a cluster-side edit (`kubectl`, another
   controller) wakes the reconcile loop within `--watch-debounce` instead of

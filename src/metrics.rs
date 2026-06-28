@@ -41,6 +41,7 @@ pub struct Metrics {
     pub sync_total: Counter<u64>,
     pub sync_errors: Counter<u64>,
     pub hooks_total: Counter<u64>,
+    pub apply_failures: Counter<u64>,
     state: Arc<Mutex<MetricsState>>,
     _gauges: [ObservableGauge<i64>; 5],
 }
@@ -62,6 +63,12 @@ impl Metrics {
         let hooks_total = meter
             .u64_counter("leancd_hooks_total")
             .with_description("Helm hooks executed, by phase and result")
+            .build();
+        let apply_failures = meter
+            .u64_counter("leancd_apply_failures_total")
+            .with_description(
+                "Resources whose server-side apply failed on a pass (self-heals on the next pass)",
+            )
             .build();
 
         let st = state.clone();
@@ -129,6 +136,7 @@ impl Metrics {
             sync_total,
             sync_errors,
             hooks_total,
+            apply_failures,
             state,
             _gauges: [last_success, managed, rss, drift, health],
         }
@@ -409,6 +417,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn apply_failures_counter_records() {
+        let rm = collect_after(|m| m.apply_failures.add(3, &[]));
+        assert_eq!(
+            counter_value(&rm, "leancd_apply_failures_total"),
+            Some(3),
+            "apply_failures counter must report the summed count"
+        );
+    }
+
+    /// Look up the most recent data-point value of a labelless u64 counter.
+    fn counter_value(rms: &[ResourceMetrics], name: &str) -> Option<u64> {
+        for rm in rms {
+            for scope in rm.scope_metrics() {
+                for metric in scope.metrics() {
+                    if metric.name() == name {
+                        if let AggregatedMetrics::U64(MetricData::Sum(s)) = metric.data() {
+                            if let Some(dp) = s.data_points().last() {
+                                return Some(dp.value());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Read a string-valued attribute, falling back to "" (cluster-scoped kinds
